@@ -1,0 +1,14 @@
+# Go
+/bin/
+*.test
+*.out
+
+# Helm
+chart/charts/*
+chart/Chart.lock
+
+# Nix
+result
+result-*
+sbom.cdx.json
+*.tar.gz

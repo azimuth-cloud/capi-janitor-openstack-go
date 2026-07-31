@@ -7,5 +7,5 @@ domain: capi.stackhpc.com
 layout:
 - go.kubebuilder.io/v4
 projectName: cluster-api-janitor-openstack
-repo: github.com/azimuth-cloud/cluster-api-janitor-openstack
+repo: github.com/azimuth-cloud/capi-janitor-openstack-go
 version: "3"

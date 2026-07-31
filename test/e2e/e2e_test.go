@@ -30,20 +30,20 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/azimuth-cloud/cluster-api-janitor-openstack/test/utils"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/test/utils"
 )
 
 // namespace where the project is deployed in
-const namespace = "cluster-api-janitor-openstack-system"
+const namespace = "capi-janitor-openstack-go-system"
 
 // serviceAccountName created for the project
-const serviceAccountName = "cluster-api-janitor-openstack-controller-manager"
+const serviceAccountName = "capi-janitor-openstack-go-controller-manager"
 
 // metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "cluster-api-janitor-openstack-controller-manager-metrics-service"
+const metricsServiceName = "capi-janitor-openstack-go-controller-manager-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "cluster-api-janitor-openstack-metrics-binding"
+const metricsRoleBindingName = "capi-janitor-openstack-go-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -176,7 +176,7 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=cluster-api-janitor-openstack-metrics-reader",
+				"--clusterrole=capi-janitor-openstack-go-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
 			_, err := utils.Run(cmd)

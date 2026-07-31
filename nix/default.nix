@@ -3,14 +3,14 @@
 let
   # Build the manager binary for a given package set (native or cross).
   buildManager = p: p.buildGoModule {
-    pname = "cluster-api-janitor-openstack";
+    pname = "capi-janitor-openstack-go";
     version = "0.0.0-dev";
     src = ../.;
     subPackages = [ "cmd" ];
     env.CGO_ENABLED = "0";
     ldflags = [ "-s" "-w" ];
     # Run `nix-build nix -A manager` once; it will fail and print the real hash.
-    vendorHash = "sha256-QEmjekl3AfSdVLkVVal7CyL7R2lxtN0SNXoUqI1Q+v4=";
+    vendorHash = "sha256-xk42g+nD4n+bf+zZPf7gl5sPLUcYsSL+B3MHQfVmgQw=";
     postInstall = ''
       mv $out/bin/cmd $out/bin/manager
     '';
@@ -19,7 +19,7 @@ let
 
   # Build a layered OCI image for a given package set.
   buildImage = p: m: p.dockerTools.buildLayeredImage {
-    name = "ghcr.io/azimuth-cloud/cluster-api-janitor-openstack";
+    name = "ghcr.io/azimuth-cloud/capi-janitor-openstack-go";
     tag = "latest";
     contents = [ pkgs.cacert m ];
     config = {
@@ -28,7 +28,7 @@ let
       User = "65532:65532";
       Labels = {
         "org.opencontainers.image.source" =
-          "https://github.com/azimuth-cloud/cluster-api-janitor-openstack";
+          "https://github.com/azimuth-cloud/capi-janitor-openstack-go";
         "org.opencontainers.image.licenses" = "Apache-2.0";
       };
     };
@@ -55,7 +55,7 @@ let
   # CI check: go fmt + go vet + unit tests (native only — arm64 cross tests cannot
   # run on an amd64 host, so doCheck is NOT set in buildManager itself).
   tests = (buildManager pkgs).overrideAttrs (_: {
-    pname = "cluster-api-janitor-openstack-tests";
+    pname = "capi-janitor-openstack-go-tests";
     subPackages = [];  # build all packages, not just cmd/
     doCheck = true;
     checkPhase = ''

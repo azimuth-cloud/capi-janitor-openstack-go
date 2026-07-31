@@ -21,8 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	"github.com/azimuth-cloud/cluster-api-janitor-openstack/internal/controller"
-	"github.com/azimuth-cloud/cluster-api-janitor-openstack/internal/openstack"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/controller"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack"
 )
 
 var testScheme *runtime.Scheme

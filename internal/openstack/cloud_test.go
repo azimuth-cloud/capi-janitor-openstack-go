@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/azimuth-cloud/cluster-api-janitor-openstack/internal/openstack"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack"
 )
 
 // keystoneServer is a configurable mock Keystone server for unit tests.

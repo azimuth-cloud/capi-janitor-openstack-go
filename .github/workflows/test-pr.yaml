@@ -17,6 +17,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref }}
   cancel-in-progress: true
 
+permissions: {}
+
 #####
 # The easiest way to set up a management cluster, make sure all the required images are
 # present and have an easy way to create Cluster API clusters using the janitor is to
@@ -25,54 +27,62 @@ concurrency:
 # TODO(mkjpryor): Change this in the future to use the CAPI management only variation
 #####
 jobs:
-  # Run the chart linting on every PR, even from external repos
-  lint:
-    uses: ./.github/workflows/helm-lint.yaml
-    with:
-      ref: ${{ github.event.pull_request.head.sha }}
-
   # Detect which parts of the PR changed, to decide whether the (expensive)
   # Azimuth integration test job needs to run.
   changes:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: read
     outputs:
-      go_tests: ${{ steps.filter.outputs.go_tests }}
-      chart: ${{ steps.filter.outputs.chart }}
+      integration: ${{ steps.filter.outputs.integration }}
     steps:
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: filter
         with:
           filters: |
-            go_tests:
-              - '**/*_test.go'
-            chart:
+            integration:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+              - 'nix/**'
+              - 'config/**'
               - 'chart/**'
+              - '.github/workflows/build-push-artifacts.yaml'
+              - '.github/workflows/test-pr.yaml'
 
-  # This job exists so that PRs from outside the main repo are rejected
-  fail_on_remote:
-    needs: [lint]
+  # Privileged integration tests are limited to branches in this repository.
+  # Forks still receive the unprivileged lint and unit-test workflows.
+  source:
     runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      internal: ${{ steps.check.outputs.internal }}
     steps:
-      - name: PR must be from a branch in the azimuth-cloud/cluster-api-janitor-openstack repo
-        run: exit ${{ github.event.pull_request.head.repo.full_name == 'azimuth-cloud/cluster-api-janitor-openstack' && '0' || '1' }}
+      - name: Check whether the PR branch belongs to this repository
+        id: check
+        env:
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [[ "$HEAD_REPOSITORY" == "azimuth-cloud/capi-janitor-openstack-go" ]]; then
+            echo "internal=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "internal=false" >> "$GITHUB_OUTPUT"
+          fi
 
   publish_artifacts:
-    needs: [fail_on_remote]
+    needs: [changes, source]
+    if: needs.changes.outputs.integration == 'true' && needs.source.outputs.internal == 'true'
     uses: ./.github/workflows/build-push-artifacts.yaml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
-    secrets: inherit
     permissions:
       contents: write
-      id-token: write         # needed for signing the images with GitHub OIDC Token
       packages: write         # required for pushing container images
-      security-events: write  # required for pushing SARIF files
 
   run_azimuth_tests:
-    needs: [publish_artifacts, changes]
-    if: needs.changes.outputs.go_tests == 'true' || needs.changes.outputs.chart == 'true'
+    needs: [publish_artifacts]
     runs-on: ubuntu-latest
     steps:
       # Check out the configuration repository
@@ -86,7 +96,7 @@ jobs:
           # We also don't need all the tests
           # The Kubernetes test is sufficient to confirm the janitor is working
           extra-vars: |
-            clusterapi_janitor_openstack_chart_repo: https://azimuth-cloud.github.io/cluster-api-janitor-openstack
+            clusterapi_janitor_openstack_chart_repo: https://azimuth-cloud.github.io/capi-janitor-openstack-go
             clusterapi_janitor_openstack_chart_version: ${{ needs.publish_artifacts.outputs.chart-version }}
             generate_tests_caas_suite_enabled: false
             generate_tests_kubernetes_apps_suite_enabled: false

@@ -100,7 +100,7 @@ templated manifests should match snapshot:
                   value: delete
                 - name: CAPI_JANITOR_RETRY_DEFAULT_DELAY
                   value: "60"
-              image: ghcr.io/azimuth-cloud/cluster-api-janitor-openstack:main
+              image: ghcr.io/azimuth-cloud/capi-janitor-openstack-go:main
               imagePullPolicy: IfNotPresent
               livenessProbe:
                 httpGet:

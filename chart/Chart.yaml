@@ -1,7 +1,10 @@
 apiVersion: v2
 name: cluster-api-janitor-openstack
-description: Helm chart for deploying cluster-api-janitor-openstack.
+description: Helm chart for deploying the Cluster API Janitor for OpenStack
 type: application
+home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
+sources:
+  - https://github.com/azimuth-cloud/capi-janitor-openstack-go
 # The version and appVersion are updated by the chart build script
 version: 0.1.0
 appVersion: main

@@ -180,7 +180,7 @@ nix-build nix -A sbom
 ```
 
 > **`nix/nixpkgs.nix`** pins `nixos-26.05` (Go 1.26+).
-> **`vendorHash`** in `nix/default.nix` is set to `sha256-5p5z+fzRkBk6rIb3DWwA3jsF4MdMVAwKHz7xza09fCc=`
+> **`vendorHash`** in `nix/default.nix` is set to `sha256-xk42g+nD4n+bf+zZPf7gl5sPLUcYsSL+B3MHQfVmgQw=`
 > (run `nix-build nix -A manager` after any `go.mod` change — the build will
 > fail and print the new hash to substitute).
 

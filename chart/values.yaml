@@ -6,7 +6,7 @@ retryDefaultDelay: 60
 
 # The image to use for the operator
 image:
-  repository: ghcr.io/azimuth-cloud/cluster-api-janitor-openstack
+  repository: ghcr.io/azimuth-cloud/capi-janitor-openstack-go
   pullPolicy: IfNotPresent
   tag: ""  # Defaults to appVersion if not given
 

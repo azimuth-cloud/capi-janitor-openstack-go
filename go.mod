@@ -1,8 +1,9 @@
-module github.com/azimuth-cloud/cluster-api-janitor-openstack
+module github.com/azimuth-cloud/capi-janitor-openstack-go
 
 go 1.26.0
 
 require (
+	github.com/azimuth-cloud/cluster-api-janitor-openstack v0.0.0-20260728084550-518b0d45b4cd
 	github.com/go-logr/logr v1.4.3
 	github.com/onsi/ginkgo/v2 v2.32.0
 	github.com/onsi/gomega v1.42.1

@@ -36,7 +36,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	"github.com/azimuth-cloud/cluster-api-janitor-openstack/internal/controller"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 

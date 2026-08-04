@@ -29,7 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/azimuth-cloud/cluster-api-janitor-openstack/test/utils"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/test/utils"
 )
 
 var (

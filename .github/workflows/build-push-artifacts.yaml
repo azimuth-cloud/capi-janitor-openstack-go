@@ -21,20 +21,21 @@ on:
         description: The chart version that was published
         value: ${{ jobs.build_push_chart.outputs.chart-version }}
 
+permissions: {}
+
 jobs:
   build_push_images:
     name: Build and push images (Nix)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write         # needed for signing the images with GitHub OIDC Token
       packages: write         # required for pushing container images
-      security-events: write  # required for pushing SARIF files
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@07ebb8d2749aa2fac2baae7d1cfa011e4acfd8d1 # v5
@@ -52,12 +53,14 @@ jobs:
 
       - name: Compute image tags
         id: tags
+        env:
+          BUILD_REF: ${{ inputs.ref || github.ref }}
         run: |
           # All final tags for the manifest list (space-separated)
           TAGS=""
-          REF="${{ github.ref }}"
+          REF="$BUILD_REF"
           SHA="${{ steps.semver.outputs.short-sha }}"
-          IMAGE="ghcr.io/azimuth-cloud/cluster-api-janitor-openstack"
+          IMAGE="ghcr.io/azimuth-cloud/capi-janitor-openstack-go"
           if [[ "$REF" == refs/tags/* ]]; then
             TAG="${REF#refs/tags/}"
             TAGS="$IMAGE:$TAG $IMAGE:$SHA"
@@ -128,6 +131,7 @@ jobs:
           # This is important for the semver action to work correctly
           # when determining the number of commits since the last tag
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Get SemVer version for current commit
         id: semver

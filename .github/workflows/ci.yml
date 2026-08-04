@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions: {}
 
 jobs:
@@ -21,3 +25,11 @@ jobs:
 
       - name: Run fmt + vet + unit tests
         run: nix-build nix -A tests
+
+  helm:
+    name: Helm lint + template tests
+    permissions:
+      contents: read
+    uses: ./.github/workflows/helm-lint.yaml
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}

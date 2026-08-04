@@ -37,7 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/azimuth-cloud/cluster-api-janitor-openstack/internal/openstack"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack"
 )
 
 const (

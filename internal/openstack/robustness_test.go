@@ -12,7 +12,7 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/azimuth-cloud/cluster-api-janitor-openstack/internal/openstack"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack"
 )
 
 // ── US12.1 : Timeout HTTP ─────────────────────────────────────────────────────

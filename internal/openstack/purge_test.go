@@ -167,6 +167,7 @@ func newPurgeTestServer(t *testing.T) *purgeTestServer {
 }
 
 func buildPurgeCloudsYAML(authURL string) string {
+	authURL = identityV3URL(authURL)
 	return fmt.Sprintf(`
 clouds:
   openstack:

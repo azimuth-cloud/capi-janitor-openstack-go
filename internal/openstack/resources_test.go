@@ -138,7 +138,7 @@ clouds:
       application_credential_secret: test-secret
     interface: public
     region_name: RegionOne
-`, srv.URL)
+`, identityV3URL(srv.URL))
 	session, err := openstack.Authenticate(context.Background(), cloudsYAML, "openstack", "")
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)
@@ -280,7 +280,7 @@ clouds:
       application_credential_secret: test-secret
     interface: public
     region_name: RegionOne
-`, srv.URL)
+`, identityV3URL(srv.URL))
 	session, err := openstack.Authenticate(context.Background(), cloudsYAML, "openstack", "")
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)
@@ -666,6 +666,7 @@ func TestListPages_PaginationEdgeCases(t *testing.T) {
 			})
 			mux.HandleFunc("/v3/auth/catalog", func(w http.ResponseWriter, r *http.Request) {
 				selfURL := "http://" + r.Host
+				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"catalog": []any{
 						map[string]any{"type": "network", "endpoints": []any{
@@ -689,7 +690,7 @@ clouds:
       application_credential_id: id
       application_credential_secret: secret
     interface: public
-`, srv.URL)
+`, identityV3URL(srv.URL))
 			session, err := openstack.Authenticate(context.Background(), cloudsYAML, "openstack", "")
 			if err != nil {
 				t.Fatalf("authenticate: %v", err)
@@ -1101,7 +1102,7 @@ clouds:
       application_credential_secret: test-secret
     interface: public
     region_name: RegionOne
-`, srv.URL)
+`, identityV3URL(srv.URL))
 	session, err := openstack.Authenticate(context.Background(), cloudsYAML, "openstack", "")
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)
@@ -1436,7 +1437,7 @@ clouds:
       application_credential_secret: test-secret
     interface: public
     region_name: RegionOne
-`, srv.URL)
+`, identityV3URL(srv.URL))
 	session, err := openstack.Authenticate(context.Background(), cloudsYAML, "openstack", "")
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)
@@ -1463,6 +1464,7 @@ func newRawVolumesServer(t *testing.T, body string) *openstack.Session {
 	})
 	mux.HandleFunc("/v3/auth/catalog", func(w http.ResponseWriter, r *http.Request) {
 		selfURL := "http://" + r.Host
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"catalog": []any{
 				map[string]any{"type": "volumev3", "endpoints": []any{
@@ -1486,7 +1488,7 @@ clouds:
       application_credential_id: id
       application_credential_secret: secret
     interface: public
-`, srv.URL)
+`, identityV3URL(srv.URL))
 	session, err := openstack.Authenticate(context.Background(), cloudsYAML, "openstack", "")
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)
@@ -1807,7 +1809,7 @@ clouds:
       application_credential_secret: test-secret
     interface: public
     region_name: RegionOne
-`, srv.URL)
+`, identityV3URL(srv.URL))
 	session, err := openstack.Authenticate(context.Background(), cloudsYAML, "openstack", "")
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)
@@ -2060,7 +2062,7 @@ clouds:
       application_credential_secret: test-secret
     interface: public
     region_name: RegionOne
-`, srv.URL)
+`, identityV3URL(srv.URL))
 	session, err := openstack.Authenticate(context.Background(), cloudsYAML, "openstack", "")
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)
@@ -2145,7 +2147,7 @@ clouds:
       user_domain_name: Default
     interface: public
     region_name: RegionOne
-`, srv.URL)
+`, identityV3URL(srv.URL))
 
 	if err := session.DeleteAppCredential(context.Background(), logr.Discard(), passwordYAML, "openstack"); err != nil {
 		t.Fatalf("expected nil for password auth (no appcred), got: %v", err)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/gophercloud/gophercloud/v2"
 )
 
 // DeleteFloatingIPs removes FIPs whose description matches the cluster.
@@ -266,18 +267,21 @@ func (s *Session) DeleteAppCredential(ctx context.Context, logger logr.Logger, c
 		logger.Info("no application credential in use, skipping deletion")
 		return nil
 	}
-	target := strings.TrimRight(identityURL, "/") + "/v3/users/" + s.userID + "/application_credentials/" + appcredID
-	req, err := newDeleteRequest(ctx, target, s.token)
+	target := strings.TrimRight(identityURL, "/") + "/v3/users/" + s.UserID() + "/application_credentials/" + appcredID
+	resp, err := s.client.Request(ctx, http.MethodDelete, target, &gophercloud.RequestOpts{
+		OkCodes: []int{
+			http.StatusOK,
+			http.StatusAccepted,
+			http.StatusNoContent,
+			http.StatusForbidden,
+			http.StatusNotFound,
+		},
+	})
 	if err != nil {
 		return err
 	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
 	switch resp.StatusCode {
-	case http.StatusNoContent, http.StatusOK, http.StatusNotFound:
+	case http.StatusNoContent, http.StatusOK, http.StatusAccepted, http.StatusNotFound:
 		logger.Info("deleted application credential for cluster")
 		return nil
 	case http.StatusForbidden:
@@ -306,15 +310,6 @@ func (s *Session) listVolumeItems(ctx context.Context, endpoint, key string) ([]
 		return nil, err
 	}
 	return items, nil
-}
-
-func newDeleteRequest(ctx context.Context, target, token string) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-Auth-Token", token)
-	return req, nil
 }
 
 // stillPresentError indicates that a resource was still present after

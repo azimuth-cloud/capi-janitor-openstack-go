@@ -6,12 +6,13 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gophercloud/gophercloud/v2"
 
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack"
 )
@@ -66,6 +67,25 @@ func newKeystoneServer(t *testing.T) *keystoneServer {
 		w.WriteHeader(ks.catalogStatus)
 		_ = json.NewEncoder(w).Encode(ks.catalog)
 	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"versions": map[string]any{
+				"values": []any{map[string]any{
+					"id":     "v3.0",
+					"status": "stable",
+					"links": []any{map[string]any{
+						"href": ks.URL + "/v3",
+						"rel":  "self",
+					}},
+				}},
+			},
+		})
+	})
 	ks.Server = httptest.NewServer(mux)
 	t.Cleanup(ks.Close)
 	return ks
@@ -96,12 +116,32 @@ func newTLSKeystoneServer(t *testing.T) *keystoneServer {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(ks.catalog)
 	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"versions": map[string]any{
+				"values": []any{map[string]any{
+					"id":     "v3.0",
+					"status": "stable",
+					"links": []any{map[string]any{
+						"href": ks.URL + "/v3",
+						"rel":  "self",
+					}},
+				}},
+			},
+		})
+	})
 	ks.Server = httptest.NewTLSServer(mux)
 	t.Cleanup(ks.Close)
 	return ks
 }
 
 func buildCloudsYAML(authURL, authType string) string {
+	authURL = identityV3URL(authURL)
 	return fmt.Sprintf(`
 clouds:
   openstack:
@@ -116,6 +156,7 @@ clouds:
 }
 
 func buildCloudsYAMLWithInterface(authURL, iface string) string {
+	authURL = identityV3URL(authURL)
 	return fmt.Sprintf(`
 clouds:
   openstack:
@@ -129,6 +170,7 @@ clouds:
 }
 
 func buildCloudsYAMLWithRegion(authURL, region string) string {
+	authURL = identityV3URL(authURL)
 	if region == "" {
 		return fmt.Sprintf(`
 clouds:
@@ -229,6 +271,7 @@ func TestAuthenticate_UnsupportedAuthType(t *testing.T) {
 // ── Password (v3password) authentication ──────────────────────────────────
 
 func buildPasswordCloudsYAML(authURL, authType string) string {
+	authURL = identityV3URL(authURL)
 	return fmt.Sprintf(`
 clouds:
   openstack:
@@ -242,6 +285,10 @@ clouds:
     region_name: RegionOne
     interface: public
 `, authType, authURL)
+}
+
+func identityV3URL(rawURL string) string {
+	return strings.TrimRight(rawURL, "/") + "/v3"
 }
 
 // Scenario: Successful authentication via username/password
@@ -281,71 +328,47 @@ func TestAuthenticate_Password_Successful(t *testing.T) {
 	}
 }
 
-// Scenario: passwordScope variants (project id, project name with each domain
-// fallback, project name with no domain info, domain-only scopes, no scope).
+// Scenario: Gophercloud accepts valid project and domain scopes and rejects
+// incomplete password configurations.
 func TestAuthenticate_PasswordScope_Variants(t *testing.T) {
 	cases := []struct {
 		name      string
 		authExtra string
+		wantErr   bool
 		wantScope func(t *testing.T, scope map[string]any)
 	}{
-		{"project_id set", "      project_id: proj-999\n", func(t *testing.T, s map[string]any) {
+		{"project_id set", "      project_id: proj-999\n      user_domain_name: Default\n", false, func(t *testing.T, s map[string]any) {
 			proj, _ := s["project"].(map[string]any)
 			if proj["id"] != "proj-999" {
 				t.Errorf("expected project id proj-999, got %v", proj)
 			}
 		}},
-		{"project_name + project_domain_id", "      project_name: myproj\n      project_domain_id: dom-1\n", func(t *testing.T, s map[string]any) {
+		{"project_name + project_domain_id", "      project_name: myproj\n      project_domain_id: dom-1\n      user_domain_name: Default\n", false, func(t *testing.T, s map[string]any) {
 			proj, _ := s["project"].(map[string]any)
 			domain, _ := proj["domain"].(map[string]any)
 			if proj["name"] != "myproj" || domain["id"] != "dom-1" {
 				t.Errorf("unexpected: %v", s)
 			}
 		}},
-		{"project_name + project_domain_name", "      project_name: myproj\n      project_domain_name: MyDomain\n", func(t *testing.T, s map[string]any) {
+		{"project_name + project_domain_name", "      project_name: myproj\n      project_domain_name: MyDomain\n      user_domain_name: Default\n", false, func(t *testing.T, s map[string]any) {
 			proj, _ := s["project"].(map[string]any)
 			domain, _ := proj["domain"].(map[string]any)
 			if domain["name"] != "MyDomain" {
 				t.Errorf("unexpected: %v", s)
 			}
 		}},
-		{"project_name + user_domain_id fallback", "      project_name: myproj\n      user_domain_id: udom-1\n", func(t *testing.T, s map[string]any) {
-			proj, _ := s["project"].(map[string]any)
-			domain, _ := proj["domain"].(map[string]any)
-			if domain["id"] != "udom-1" {
-				t.Errorf("expected fallback to user_domain_id, got: %v", s)
-			}
-		}},
-		{"project_name + user_domain_name fallback", "      project_name: myproj\n      user_domain_name: UserDom\n", func(t *testing.T, s map[string]any) {
-			proj, _ := s["project"].(map[string]any)
-			domain, _ := proj["domain"].(map[string]any)
-			if domain["name"] != "UserDom" {
-				t.Errorf("expected fallback to user_domain_name, got: %v", s)
-			}
-		}},
-		{"project_name, no domain info", "      project_name: myproj\n", func(t *testing.T, s map[string]any) {
-			proj, _ := s["project"].(map[string]any)
-			if _, ok := proj["domain"]; ok {
-				t.Errorf("expected no domain key, got: %v", proj)
-			}
-		}},
-		{"domain_id only, no project", "      domain_id: dom-only\n", func(t *testing.T, s map[string]any) {
-			domain, _ := s["domain"].(map[string]any)
-			if domain["id"] != "dom-only" {
-				t.Errorf("unexpected: %v", s)
-			}
-		}},
-		{"domain_name only, no project", "      domain_name: DomOnly\n", func(t *testing.T, s map[string]any) {
-			domain, _ := s["domain"].(map[string]any)
-			if domain["name"] != "DomOnly" {
-				t.Errorf("unexpected: %v", s)
-			}
-		}},
-		{"nothing set, no scope", "", func(t *testing.T, s map[string]any) {
+		{"user_domain_id only, no project", "      user_domain_id: dom-only\n", false, func(t *testing.T, s map[string]any) {
 			if s != nil {
-				t.Errorf("expected nil scope, got: %v", s)
+				t.Errorf("expected an unscoped token request, got: %v", s)
 			}
 		}},
+		{"user_domain_name only, no project", "      user_domain_name: DomOnly\n", false, func(t *testing.T, s map[string]any) {
+			if s != nil {
+				t.Errorf("expected an unscoped token request, got: %v", s)
+			}
+		}},
+		{"missing user domain", "", true, nil},
+		{"project name missing project domain", "      project_name: myproj\n      user_domain_name: Default\n", true, nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -361,6 +384,12 @@ clouds:
       password: s3cret
 %s`, ks.URL, c.authExtra)
 			_, err := openstack.Authenticate(context.Background(), clouds, "openstack", "")
+			if c.wantErr {
+				if err == nil {
+					t.Fatal("expected Gophercloud to reject the incomplete password scope")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -403,8 +432,8 @@ clouds:
 	}
 }
 
-// Scenario: username set without any user domain → domain key omitted
-func TestAuthenticate_Password_NoUserDomain_OmitsDomainKey(t *testing.T) {
+// Scenario: username set without a user domain is rejected by Gophercloud.
+func TestAuthenticate_Password_NoUserDomain_ReturnsError(t *testing.T) {
 	ks := newKeystoneServer(t)
 	ks.catalog = catalogWith(serviceEntry("compute", endpoint("public", "RegionOne", "http://x")))
 	clouds := fmt.Sprintf(`
@@ -416,16 +445,8 @@ clouds:
       username: alice
       password: s3cret
 `, ks.URL)
-	_, err := openstack.Authenticate(context.Background(), clouds, "openstack", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	auth, _ := ks.lastTokenBody["auth"].(map[string]any)
-	identity, _ := auth["identity"].(map[string]any)
-	pw, _ := identity["password"].(map[string]any)
-	user, _ := pw["user"].(map[string]any)
-	if _, hasDomain := user["domain"]; hasDomain {
-		t.Errorf("expected no domain key, got %v", user)
+	if _, err := openstack.Authenticate(context.Background(), clouds, "openstack", ""); err == nil {
+		t.Fatal("expected an error when username authentication has no user domain")
 	}
 }
 
@@ -498,6 +519,18 @@ func TestAuthenticate_DeletedApplicationCredential_Returns404(t *testing.T) {
 	}
 }
 
+// A 404 during password authentication is not an already-deleted application
+// credential and must remain an error.
+func TestAuthenticate_PasswordNotFound_ReturnsError(t *testing.T) {
+	ks := newKeystoneServer(t)
+	ks.tokenStatus = http.StatusNotFound
+
+	clouds := buildPasswordCloudsYAML(ks.URL, "v3password")
+	if _, err := openstack.Authenticate(context.Background(), clouds, "openstack", ""); err == nil {
+		t.Fatal("expected password authentication 404 to be returned as an error")
+	}
+}
+
 // Scenario: Token request fails with a non-404 error
 // When the operator attempts to authenticate
 // Then the error is propagated
@@ -518,8 +551,8 @@ func TestAuthenticate_TokenRequestFails_NonFatal(t *testing.T) {
 	}
 }
 
-// Scenario: httpStatusError exposes the HTTP status code and message
-func TestHTTPStatusError_ExposesStatusCode(t *testing.T) {
+// Scenario: Gophercloud preserves the HTTP response code for classification.
+func TestGophercloudError_ExposesResponseCode(t *testing.T) {
 	ks := newKeystoneServer(t)
 	ks.tokenStatus = http.StatusInternalServerError
 
@@ -529,15 +562,8 @@ func TestHTTPStatusError_ExposesStatusCode(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var target interface{ StatusCode() int }
-	if !errors.As(err, &target) {
-		t.Fatalf("expected error implementing StatusCode() int, got %T: %v", err, err)
-	}
-	if target.StatusCode() != http.StatusInternalServerError {
-		t.Errorf("expected StatusCode() 500, got %d", target.StatusCode())
-	}
-	if err.Error() != "HTTP 500" {
-		t.Errorf("expected message %q, got %q", "HTTP 500", err.Error())
+	if !gophercloud.ResponseCodeIs(err, http.StatusInternalServerError) {
+		t.Fatalf("expected a Gophercloud HTTP 500 error, got %T: %v", err, err)
 	}
 }
 

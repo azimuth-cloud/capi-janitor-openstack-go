@@ -150,6 +150,33 @@ make run               # Run locally (uses current kubeconfig context)
 
 Tests use **Ginkgo + Gomega** (BDD style). Check `suite_test.go` for setup.
 
+## Kubernetes Writing Style
+
+Write comments, API documentation, events, and logs so that Kubernetes and
+OpenStack contributors can read them quickly.
+
+- Use present tense and active voice.
+- Use short and direct sentences. Split a sentence when it explains more than
+  one action or rule.
+- Avoid jargon, idioms, future promises, and unnecessary qualifiers.
+- Avoid hyphenated prose when plain words work. Keep hyphens that are part of
+  commands, flags, URLs, API fields, resource names, and quoted external text.
+- Start a Go declaration comment with the exact exported name.
+- Use Kubernetes API names exactly. Use `LoadBalancer` for the API value and
+  `load balancer` for the general resource.
+- Use U.S. English spelling in documentation and comments.
+- Keep error strings lowercase because callers can wrap them.
+- Follow the logging rules in the Logging section. Do not log an error and
+  return the same error unless the log adds information at a deliberate
+  verbosity level.
+
+Use these references for every API, documentation, comment, event, and logging
+change:
+
+- [Kubernetes API conventions](https://github.com/kubernetes/community/blob/main/contributors/devel/sig-architecture/api-conventions.md)
+- [Kubernetes documentation style](https://kubernetes.io/docs/contribute/style/style-guide/)
+- [Kubernetes logging](https://github.com/kubernetes/community/blob/main/contributors/devel/sig-instrumentation/logging.md)
+
 ## Deployment Workflow
 
 ```bash
@@ -225,10 +252,10 @@ kubectl logs -n <project>-system deployment/<project>-controller-manager -c mana
 ```go
 log.Info("Starting reconciliation")
 log.Info("Created Deployment", "name", deploy.Name)
-log.Error(err, "Failed to create Pod", "name", name)
+log.Error(err, "Could not create Pod", "name", name)
 ```
 
-**Reference:** https://github.com/kubernetes/community/blob/master/contributors/devel/sig-instrumentation/logging.md#message-style-guidelines
+**Reference:** https://github.com/kubernetes/community/blob/main/contributors/devel/sig-instrumentation/logging.md#message-style-guidelines
 
 ### Webhooks
 - **Create all types together**: `--defaulting --programmatic-validation --conversion`

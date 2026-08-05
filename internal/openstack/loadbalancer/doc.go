@@ -1,2 +1,2 @@
-// Package loadbalancer provides cleanup operations for Octavia loadbalancers.
+// Package loadbalancer provides Octavia cleanup operations.
 package loadbalancer

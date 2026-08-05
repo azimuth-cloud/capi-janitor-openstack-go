@@ -12,6 +12,8 @@ type Runner interface {
 // selected project and deletes an already-authorised floating IP by ID.
 type FloatingIPService interface {
 	ListFloatingIPs(context.Context) ([]FloatingIP, error)
+	// DeleteFloatingIP treats an absent resource as complete and returns
+	// ErrDeletePending when OpenStack requires a later observation.
 	DeleteFloatingIP(context.Context, string) error
 }
 
@@ -20,6 +22,8 @@ type FloatingIPService interface {
 // by ID.
 type LoadBalancerService interface {
 	ListLoadBalancers(context.Context) ([]LoadBalancer, error)
+	// DeleteLoadBalancer treats an absent resource as complete and returns
+	// ErrDeletePending when OpenStack requires a later observation.
 	DeleteLoadBalancer(context.Context, string) error
 }
 
@@ -27,6 +31,8 @@ type LoadBalancerService interface {
 // selected project and deletes an already-authorised security group by ID.
 type SecurityGroupService interface {
 	ListSecurityGroups(context.Context) ([]SecurityGroup, error)
+	// DeleteSecurityGroup treats an absent resource as complete and returns
+	// ErrDeletePending when OpenStack requires a later observation.
 	DeleteSecurityGroup(context.Context, string) error
 }
 
@@ -34,6 +40,8 @@ type SecurityGroupService interface {
 // project and region and deletes an already-authorised snapshot by ID.
 type SnapshotService interface {
 	ListSnapshots(context.Context) ([]Snapshot, error)
+	// DeleteSnapshot treats an absent resource as complete and returns
+	// ErrDeletePending when OpenStack requires a later observation.
 	DeleteSnapshot(context.Context, string) error
 }
 
@@ -41,11 +49,15 @@ type SnapshotService interface {
 // project and region and deletes an already-authorised volume by ID.
 type VolumeService interface {
 	ListVolumes(context.Context) ([]Volume, error)
+	// DeleteVolume treats an absent resource as complete and returns
+	// ErrDeletePending when OpenStack requires a later observation.
 	DeleteVolume(context.Context, string) error
 }
 
-// ApplicationCredentialService deletes the exact application credential
-// selected from the resolved cloud configuration.
+// ApplicationCredentialService deletes the exact application credential ID
+// from the selected cloud configuration. It follows the common delete
+// contract and returns ErrApplicationCredentialForbidden only when Keystone
+// rejects application credential self-deletion with HTTP 403.
 type ApplicationCredentialService interface {
 	DeleteApplicationCredential(context.Context, string) error
 }

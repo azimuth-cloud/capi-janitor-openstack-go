@@ -1,6 +1,5 @@
-// Package identity contains the Keystone-backed cleanup adapter.
+// Package identity contains the Keystone cleanup service.
 //
-// The adapter implementation is intentionally reserved for the resource
-// adapter change. It will use Gophercloud's typed identity packages and
-// implement the relevant interface from internal/cleanup.
+// The service implementation will use Gophercloud's typed identity package and
+// implement the small interface in internal/cleanup.
 package identity

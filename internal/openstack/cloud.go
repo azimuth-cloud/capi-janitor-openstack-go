@@ -1,5 +1,5 @@
-// Package openstack provides the compatibility layer used by the existing
-// cleanup implementation while it is moved to domain owned resource adapters.
+// Package openstack contains the current cleanup entry point and its legacy
+// compatibility code.
 package openstack
 
 import (
@@ -44,10 +44,8 @@ func (e *CatalogError) Error() string {
 	return fmt.Sprintf("service type %s not found in OpenStack service catalog", e.ServiceType)
 }
 
-// Session temporarily preserves the API used by the existing cleanup code.
-// Authentication, catalog discovery and request handling are delegated to
-// Gophercloud. Resource-specific methods will move behind internal/cleanup
-// interfaces in the resource-adapter change.
+// Session keeps the API used by the legacy manual HTTP cleanup code.
+// Authentication and request handling already use Gophercloud.
 type Session struct {
 	client *openstackclient.Client
 

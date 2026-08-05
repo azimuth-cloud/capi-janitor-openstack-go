@@ -1,6 +1,5 @@
-// Package volume contains the Cinder-backed cleanup adapters.
+// Package volume contains the Cinder cleanup service.
 //
-// The adapter implementation is intentionally reserved for the resource
-// adapter change. It will use Gophercloud's typed block-storage packages and
-// implement the relevant interfaces from internal/cleanup.
+// The service implementation will use Gophercloud's typed block-storage
+// packages and implement the small interfaces in internal/cleanup.
 package volume

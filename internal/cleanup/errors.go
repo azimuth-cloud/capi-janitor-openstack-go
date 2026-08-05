@@ -5,7 +5,7 @@ import "errors"
 var (
 	// ErrDeletePending marks an OpenStack delete response that requires the
 	// resource to be observed again before cleanup can advance. The resource
-	// adapter uses this for the 400 and 409 responses retained from the Python
+	// service uses this for the 400 and 409 responses retained from the Python
 	// controller's retry behaviour.
 	ErrDeletePending = errors.New("OpenStack resource deletion is pending")
 

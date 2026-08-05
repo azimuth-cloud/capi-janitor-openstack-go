@@ -20,7 +20,7 @@ For initial parity:
 
 - the Secret is in the same namespace as the `OpenStackCluster`
 - the cloud is selected by `identityRef.cloudName`, with `openstack` as the default
-- the OpenStack project is the project scoped by the application credential
+- the OpenStack project is the project scoped by the selected credential and authenticated token
 - the interface and region come from the selected `clouds.yaml` entry
 - the cluster name comes from `cluster.x-k8s.io/cluster-name`, falling back to `OpenStackCluster.metadata.name`
 
@@ -31,12 +31,16 @@ Project and region scoping reduce the candidate inventory, but they do not repla
 | Resource | Policy gate | Python selector | Initial Go selector | Delete request |
 | --- | --- | --- | --- | --- |
 | Neutron floating IP | Always considered during deletion | `description` starts with `Floating IP for Kubernetes external service` and ends with `from cluster <cluster-name>` | Exact same start and end checks | Delete by floating IP ID |
-| Octavia service loadbalancer | Considered only when CAPO API server LB is enabled and `status.apiServerLoadBalancer.id` is non-empty | `name` starts with `kube_service_<cluster-name>_` | Exact same prefix check | Cascade delete by load balancer ID |
+| Octavia service load balancer | Considered only when CAPO API server load balancer is enabled and `status.apiServerLoadBalancer.id` is not empty | `name` starts with `kube_service_<cluster-name>_` | Exact same prefix check | Cascade delete by load balancer ID |
 | Neutron service security group | Always considered during deletion | `description` starts with `Security Group for` and ends with `Service LoadBalancer in cluster <cluster-name>` | Exact same start and end checks | Delete by security group ID |
 | Cinder snapshot | Considered only when resolved volume policy is `delete` | Metadata key `cinder.csi.openstack.org/cluster` exactly equals the cluster name | Exact same metadata check | Delete by snapshot ID |
 | Cinder volume | Considered only when resolved volume policy is `delete` | Metadata key `cinder.csi.openstack.org/cluster` exactly equals the cluster name and keep property is not exactly `true` | Exact same metadata and keep checks | Delete by volume ID |
-| Keystone application credential | Considered only when Secret credential policy is `delete` and the Janitor finalizer is the only finalizer | Application credential ID read from the hard-coded `openstack` entry | Exact ID from the selected cloud entry. This corrects the non-default cloud bug without broadening the resource type | Delete for the authenticated user by application credential ID |
+| Keystone application credential | Considered only when Secret credential policy is `delete` and the Janitor finalizer is the only finalizer | Application credential ID read from the fixed `openstack` entry | Exact ID from the selected cloud entry. This corrects the cloud selection bug without broadening the resource type | Delete for the authenticated user by application credential ID |
 | Kubernetes credential Secret | Same gate as application credential cleanup | Exact Secret referenced by `spec.identityRef.name` in the `OpenStackCluster` namespace | Exact same object reference | Delete by namespace and name |
+
+Clouds that use password authentication have no application credential ID. They
+use the same project resource ownership rules, but the Keystone application
+credential deletion row is not applicable.
 
 The candidate selectors and the verification selectors must be the same. 
 A controller must not request deletion using one rule and later declare success using a weaker rule.

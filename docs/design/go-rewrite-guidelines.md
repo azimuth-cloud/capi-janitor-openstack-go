@@ -55,7 +55,7 @@ The following are not part of initial parity:
 - arbitrary project cleanup
 - keypair cleanup
 - new naming conventions that the Python controller does not recognise
-- additional authentication methods
+- additional authentication methods beyond application credential and password
 - `ClusterIdentity` support
 - new resource types from open or unmerged changes in the Python repository
 
@@ -164,17 +164,17 @@ Gophercloud `v2` and Gophercloud `utils` should be direct dependencies.
 The project should not maintain its own implementation of Keystone authentication, service catalog parsing, endpoint construction, token refresh, pagination, or
 service-specific response models.
 
-The initial OpenStack client should deliberately retain the Python controller's supported identity surface:
+The OpenStack client supports the following identity configuration:
 
 - a same namespace Secret referenced by `OpenStackCluster.spec.identityRef`
 - a `clouds.yaml` entry selected by `cloudName`
-- `v3applicationcredential` authentication
+- `v3applicationcredential` or `v3password` authentication
 - interface and region values from the selected `clouds.yaml` entry
 - the optional CA certificate stored in the Secret
 
 Gophercloud may support more configurations, but the Janitor should validate
 the initial supported set rather than enabling new behaviour accidentally.
-(`ClusterIdentity`, additional authentication methods, and different identity sources are follow-up features.)
+(`ClusterIdentity`, token or federation authentication, and different identity sources are follow-up features.)
 
 > [!IMPORTANT]
 >CAPO API types are part of the watched contract, but CAPO internal packages and broad implementation interfaces should not become dependencies of the Janitor.

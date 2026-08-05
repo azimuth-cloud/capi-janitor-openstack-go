@@ -1,4 +1,5 @@
-// Package openstack runs cleanup and supports the legacy HTTP implementation.
+// Package openstack composes resource services for cleanup.
+// It also supports the legacy HTTP implementation.
 package openstack
 
 import (
@@ -44,7 +45,7 @@ func (e *CatalogError) Error() string {
 }
 
 // Session provides the API used by the legacy HTTP cleanup implementation.
-// Gophercloud handles authentication and requests.
+// PurgeResources uses typed Gophercloud services instead.
 type Session struct {
 	client *openstackclient.Client
 

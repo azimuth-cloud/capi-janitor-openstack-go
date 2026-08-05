@@ -42,12 +42,12 @@ type Options struct {
 	CACert     string
 }
 
-// Client owns an authenticated Gophercloud provider and the endpoint selection
-// resolved from clouds.yaml.
+// Client holds an authenticated Gophercloud provider and the endpoint settings
+// read from clouds.yaml.
 //
-// OpenStack resource adapters may use ProviderClient and EndpointOpts with the
-// typed constructors in Gophercloud. Cleanup policy and Kubernetes
-// reconciliation should depend on the interfaces in internal/cleanup instead.
+// Resource services use ProviderClient and EndpointOpts to create typed
+// Gophercloud clients. Cleanup and controller code use the small interfaces in
+// internal/cleanup.
 type Client struct {
 	provider                *gophercloud.ProviderClient
 	endpointOpts            gophercloud.EndpointOpts
@@ -260,9 +260,8 @@ func (c *Client) EndpointOpts() gophercloud.EndpointOpts {
 	return c.endpointOpts
 }
 
-// Endpoint locates a service endpoint using the region and interface selected
-// from clouds.yaml. It is retained for the legacy resource implementation and
-// will be removed after typed Gophercloud adapters replace that implementation.
+// Endpoint finds a service endpoint for the configured region and interface.
+// It remains only for the legacy manual HTTP code and will be removed with it.
 func (c *Client) Endpoint(serviceType string) (string, error) {
 	if c == nil || c.provider == nil || c.provider.EndpointLocator == nil {
 		return "", &gophercloud.ErrEndpointNotFound{}
@@ -272,9 +271,8 @@ func (c *Client) Endpoint(serviceType string) (string, error) {
 	return c.provider.EndpointLocator(opts)
 }
 
-// Request performs an authenticated Gophercloud request. It is retained for
-// the legacy resource implementation. New resource adapters should use typed
-// Gophercloud service packages instead.
+// Request sends an authenticated HTTP request. It remains only for the legacy
+// manual HTTP code. Resource services use typed Gophercloud packages instead.
 func (c *Client) Request(ctx context.Context, method, url string, opts *gophercloud.RequestOpts) (*http.Response, error) {
 	return c.provider.Request(ctx, method, url, opts)
 }

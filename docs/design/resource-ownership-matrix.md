@@ -181,7 +181,7 @@ Any missing condition means that the credential and Secret are not deleted in th
 
 ## Discovery and deletion rules
 
-Every resource adapter must list all pages before cleanup can be declared complete. 
+Every resource service must list all pages before cleanup can be declared complete.
 A pagination or extraction error makes inventory incomplete and must retain the finalizer.
 
 Selection should be implemented as pure functions over small domain types.
@@ -199,7 +199,7 @@ Each selector needs:
 - a different-cluster negative fixture
 - a partial-match negative fixture
 - an empty or missing-field negative fixture
-- a candidate in an unselected project or region at the adapter boundary
+- a candidate in an unselected project or region at the service boundary
 
 The composed OpenStack end-to-end test should create at least one owned resource and one similar non owned resource. 
 The test passes only when the owned resource is removed and the non owned resource remains.

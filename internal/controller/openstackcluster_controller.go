@@ -149,18 +149,24 @@ func (r *OpenStackClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	includeVolumes := r.volumesPolicyFor(&cluster) == PolicyDelete
+	// Match the existing cleanup rule. Include service load balancers only when
+	// CAPO enables the API load balancer and reports its ID.
+	includeLoadBalancers := cluster.Spec.APIServerLoadBalancer.IsEnabled() &&
+		cluster.Status.APIServerLoadBalancer != nil &&
+		cluster.Status.APIServerLoadBalancer.ID != ""
 
 	credentialPolicy := secret.Annotations[CredentialPolicyAnnotation]
 	includeAppcred := credentialPolicy == PolicyDelete && len(cluster.Finalizers) == 1
 
 	purgeErr := r.purge(ctx, openstack.PurgeOptions{
-		CloudsYAML:     cloudsYAML,
-		CloudName:      cloudName,
-		CACert:         cacert,
-		ClusterName:    clusterName,
-		IncludeVolumes: includeVolumes,
-		IncludeAppcred: includeAppcred,
-		Logger:         logger,
+		CloudsYAML:           cloudsYAML,
+		CloudName:            cloudName,
+		CACert:               cacert,
+		ClusterName:          clusterName,
+		IncludeLoadBalancers: includeLoadBalancers,
+		IncludeVolumes:       includeVolumes,
+		IncludeAppcred:       includeAppcred,
+		Logger:               logger,
 	})
 	if purgeErr != nil {
 		r.incMetric("failure")

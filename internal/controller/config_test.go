@@ -65,7 +65,7 @@ func withVolumePolicy(policy string) func(*infrav1.OpenStackCluster) {
 	}
 }
 
-func reconcileForVolumesCapture(t *testing.T, defaultPolicy string, clusterOpts ...func(*infrav1.OpenStackCluster)) openstack.PurgeOptions {
+func reconcileAndCapturePurgeOptions(t *testing.T, defaultPolicy string, clusterOpts ...func(*infrav1.OpenStackCluster)) openstack.PurgeOptions {
 	t.Helper()
 	opts := append([]func(*infrav1.OpenStackCluster){withFinalizer, withDeletionTimestamp}, clusterOpts...)
 	cluster := newCluster("mycluster", "default", opts...)
@@ -86,7 +86,7 @@ func reconcileForVolumesCapture(t *testing.T, defaultPolicy string, clusterOpts 
 
 // Scenario: Global policy "delete" → volumes included in the purge
 func TestReconcile_VolumesPolicy_IncludesVolumes_WhenDelete(t *testing.T) {
-	opts := reconcileForVolumesCapture(t, controller.PolicyDelete)
+	opts := reconcileAndCapturePurgeOptions(t, controller.PolicyDelete)
 	if !opts.IncludeVolumes {
 		t.Error("expected IncludeVolumes=true for policy 'delete'")
 	}
@@ -94,7 +94,7 @@ func TestReconcile_VolumesPolicy_IncludesVolumes_WhenDelete(t *testing.T) {
 
 // Scenario: Global policy "keep" → volumes excluded from the purge
 func TestReconcile_VolumesPolicy_ExcludesVolumes_WhenKeep(t *testing.T) {
-	opts := reconcileForVolumesCapture(t, "keep")
+	opts := reconcileAndCapturePurgeOptions(t, "keep")
 	if opts.IncludeVolumes {
 		t.Error("expected IncludeVolumes=false for policy 'keep'")
 	}
@@ -102,7 +102,7 @@ func TestReconcile_VolumesPolicy_ExcludesVolumes_WhenKeep(t *testing.T) {
 
 // Scenario: Annotation "delete" on the cluster (overrides global keep)
 func TestReconcile_VolumesPolicy_AnnotationDeleteOverridesKeepGlobal(t *testing.T) {
-	opts := reconcileForVolumesCapture(t, "keep", withVolumePolicy(controller.PolicyDelete))
+	opts := reconcileAndCapturePurgeOptions(t, "keep", withVolumePolicy(controller.PolicyDelete))
 	if !opts.IncludeVolumes {
 		t.Error("expected IncludeVolumes=true when annotation 'delete' overrides global 'keep'")
 	}
@@ -110,9 +110,63 @@ func TestReconcile_VolumesPolicy_AnnotationDeleteOverridesKeepGlobal(t *testing.
 
 // Scenario: Annotation "keep" on the cluster (overrides global delete)
 func TestReconcile_VolumesPolicy_AnnotationKeepOverridesDeleteGlobal(t *testing.T) {
-	opts := reconcileForVolumesCapture(t, controller.PolicyDelete, withVolumePolicy("keep"))
+	opts := reconcileAndCapturePurgeOptions(t, controller.PolicyDelete, withVolumePolicy("keep"))
 	if opts.IncludeVolumes {
 		t.Error("expected IncludeVolumes=false when annotation 'keep' overrides global 'delete'")
+	}
+}
+
+// ── Load balancer cleanup gate ───────────────────────────────────────────────
+
+func withAPIServerLoadBalancer(enabled bool, id string) func(*infrav1.OpenStackCluster) {
+	return func(c *infrav1.OpenStackCluster) {
+		c.Spec.APIServerLoadBalancer = &infrav1.APIServerLoadBalancer{Enabled: &enabled}
+		c.Status.APIServerLoadBalancer = &infrav1.LoadBalancer{ID: id}
+	}
+}
+
+func TestReconcile_LoadBalancerCleanupGate(t *testing.T) {
+	tests := []struct {
+		name    string
+		options []func(*infrav1.OpenStackCluster)
+		want    bool
+	}{
+		{
+			name:    "disabled without observed status ID",
+			options: []func(*infrav1.OpenStackCluster){withAPIServerLoadBalancer(false, "")},
+			want:    false,
+		},
+		{
+			name: "spec omitted even when status has an ID",
+			options: []func(*infrav1.OpenStackCluster){func(c *infrav1.OpenStackCluster) {
+				c.Status.APIServerLoadBalancer = &infrav1.LoadBalancer{ID: "lb-id"}
+			}},
+			want: false,
+		},
+		{
+			name:    "explicitly disabled with status ID",
+			options: []func(*infrav1.OpenStackCluster){withAPIServerLoadBalancer(false, "lb-id")},
+			want:    false,
+		},
+		{
+			name:    "enabled without observed status ID",
+			options: []func(*infrav1.OpenStackCluster){withAPIServerLoadBalancer(true, "")},
+			want:    false,
+		},
+		{
+			name:    "enabled with observed status ID",
+			options: []func(*infrav1.OpenStackCluster){withAPIServerLoadBalancer(true, "lb-id")},
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := reconcileAndCapturePurgeOptions(t, controller.PolicyDelete, tt.options...)
+			if opts.IncludeLoadBalancers != tt.want {
+				t.Fatalf("IncludeLoadBalancers = %t, want %t", opts.IncludeLoadBalancers, tt.want)
+			}
+		})
 	}
 }
 

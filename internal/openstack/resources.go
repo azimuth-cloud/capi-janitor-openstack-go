@@ -14,6 +14,10 @@ import (
 	"github.com/gophercloud/gophercloud/v2"
 )
 
+// The Session methods in this file provide the unused legacy implementation.
+// PurgeResources uses the typed Gophercloud services. Keeping this file makes
+// its removal a separate review.
+
 // DeleteFloatingIPs removes FIPs whose description matches the cluster.
 // Expected: "Floating IP for Kubernetes external service from cluster <name>"
 func (s *Session) DeleteFloatingIPs(ctx context.Context, logger logr.Logger, cluster string) error {

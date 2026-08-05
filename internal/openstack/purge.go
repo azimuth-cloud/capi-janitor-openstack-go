@@ -4,65 +4,56 @@ import (
 	"context"
 
 	"github.com/go-logr/logr"
+
+	openstackclient "github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack/client"
 )
 
-// PurgeOptions holds parameters for cleaning up OpenStack resources
-// associated with a deleted Cluster API cluster.
+// PurgeOptions contains settings for OpenStack resource cleanup.
 type PurgeOptions struct {
 	// CloudsYAML is the decoded content of the clouds.yaml credential file.
 	CloudsYAML string
 	// CloudName is the entry name within clouds.yaml to use.
 	CloudName string
-	// CACert is an optional PEM-encoded CA certificate for TLS verification.
+	// CACert is an optional PEM CA certificate for TLS verification.
 	CACert string
 	// ClusterName is the CAPI cluster name used to identify owned resources.
 	ClusterName string
-	// IncludeVolumes controls whether Cinder volumes and snapshots are deleted.
+	// IncludeLoadBalancers controls Octavia load balancer deletion.
+	IncludeLoadBalancers bool
+	// IncludeVolumes controls Cinder volume and snapshot deletion.
 	IncludeVolumes bool
-	// IncludeAppcred controls whether the OpenStack application credential is deleted.
+	// IncludeAppcred controls application credential deletion.
 	IncludeAppcred bool
 	// Logger receives structured log messages during cleanup.
 	Logger logr.Logger
 }
 
-// PurgeResources removes all OpenStack resources (FIPs, load balancers,
-// security groups, volumes, snapshots, and optionally the application
-// credential) created by OCCM/CSI for the given cluster.
+// PurgeResources removes OpenStack resources created for a cluster.
 func PurgeResources(ctx context.Context, opts PurgeOptions) error {
-	session, err := Authenticate(ctx, opts.CloudsYAML, opts.CloudName, opts.CACert)
+	client, err := openstackclient.NewClient(ctx, openstackclient.Options{
+		CloudsYAML: opts.CloudsYAML,
+		CloudName:  opts.CloudName,
+		CACert:     opts.CACert,
+	})
 	if err != nil {
 		return err
 	}
 
-	if !session.IsAuthenticated() {
-		if opts.IncludeAppcred {
-			opts.Logger.Info("application credential has been deleted, skipping cleanup")
-			return nil
-		}
-		return &AuthenticationError{UserID: session.UserID()}
+	// Authentication failure does not show that cleanup is complete. Return an
+	// error so that the controller keeps the finalizer and retries.
+	if !client.IsAuthenticated() {
+		return &AuthenticationError{UserID: client.UserID()}
 	}
 
-	if err := session.DeleteFloatingIPs(ctx, opts.Logger, opts.ClusterName); err != nil {
-		return err
+	purger := resourcePurger{
+		factory:                 &gophercloudResourceFactory{client: client},
+		clusterName:             opts.ClusterName,
+		includeLoadBalancers:    opts.IncludeLoadBalancers,
+		includeVolumes:          opts.IncludeVolumes,
+		includeAppCredential:    opts.IncludeAppcred,
+		applicationCredentialID: client.ApplicationCredentialID(),
+		logger:                  opts.Logger,
+		wait:                    waitForNextObservation,
 	}
-	if err := session.DeleteLoadBalancers(ctx, opts.Logger, opts.ClusterName); err != nil {
-		return err
-	}
-	if err := session.DeleteSecurityGroups(ctx, opts.Logger, opts.ClusterName); err != nil {
-		return err
-	}
-	if opts.IncludeVolumes {
-		if err := session.DeleteSnapshots(ctx, opts.Logger, opts.ClusterName); err != nil {
-			return err
-		}
-		if err := session.DeleteVolumes(ctx, opts.Logger, opts.ClusterName); err != nil {
-			return err
-		}
-	}
-	if opts.IncludeAppcred {
-		if err := session.DeleteAppCredential(ctx, opts.Logger, opts.CloudsYAML, opts.CloudName); err != nil {
-			return err
-		}
-	}
-	return nil
+	return purger.purge(ctx)
 }

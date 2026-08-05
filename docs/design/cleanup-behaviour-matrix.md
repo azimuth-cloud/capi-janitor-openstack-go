@@ -41,14 +41,15 @@ The decisions used below are:
 | Identity source | Reads the same-namespace Secret named by `spec.identityRef.name` | Keep | A Secret in the object namespace is read and a same-named Secret elsewhere is ignored |
 | Secret data | Decodes the Kubernetes API representation of `clouds.yaml` and optional `cacert` | Keep the resulting bytes. In Go, `Secret.Data` is already decoded | Raw Secret bytes reach the parser exactly once |
 | Cloud name | Uses `identityRef.cloudName`, then legacy `spec.cloudName`, then `openstack` | Keep `identityRef.cloudName` with `openstack` default for the selected CAPO API. Legacy API support depends on the supported-version matrix | Explicit and default cloud names select the expected entry |
-| Authentication | Supports only `v3applicationcredential` | Keep | Other auth types are rejected without making a deletion request |
+| Authentication | Supports only `v3applicationcredential` | Intentional extension. Support `v3applicationcredential` and `v3password` | Both supported methods authenticate through Gophercloud. All other auth types are rejected without making a deletion request |
+| Password credential cleanup | Not supported | Keep. Password authentication has no application credential ID, so the Keystone credential deletion stage does not apply | Resource cleanup completes without creating an Identity client or attempting application credential deletion |
 | Region | Uses `region_name` from the selected `clouds.yaml` entry | Keep | Only the configured region endpoint is selected |
 | Interface | Uses the configured interface and defaults to `public` | Keep | Explicit and default interface selection are covered |
 | TLS verification | Uses `verify` from `clouds.yaml` and loads optional CA data from the Secret | Keep through Gophercloud transport configuration | Default verification, custom CA, and invalid CA cases are covered |
 | Token handling | Uses a hand-written token and catalog client | Keep outcome, replace with Gophercloud authentication and reauthentication | An expired token is reauthenticated and the request is retried through Gophercloud |
 | Pagination | Iterates resource lists across returned pages | Keep through Gophercloud pagers | A matching resource on a later page is found |
 | `ClusterIdentity` | Not supported by the Python controller | Defer | The initial controller rejects or reports the unsupported type without deletion |
-| Additional auth methods | Not supported | Defer | Password, token, and other auth types do not enable cleanup |
+| Additional auth methods | Not supported | Defer beyond the explicitly supported application credential and password methods | Token, federation, and other auth types do not enable cleanup |
 | IdentityRef region override | Not used by the Python controller | Defer until a separate compatibility decision | Setting only the IdentityRef region does not silently widen the initial support contract |
 
 ## Resource cleanup
@@ -105,7 +106,7 @@ would make the rewrite larger than the Python role:
 - deleting infrastructure managed by CAPO
 - supporting additional OCCM or Azimuth naming conventions
 - supporting `ClusterIdentity`
-- supporting password, token, federation, or other authentication methods
+- supporting token, federation, or other authentication methods beyond application credential and password
 - replacing the existing ownership selectors with tag-based discovery
 - adding a Janitor status CRD
 - changing the finalizer value

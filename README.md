@@ -145,9 +145,9 @@ go build ./...
 go test ./...
 ```
 
-The test suite covers 168 unit tests across 4 packages (93% statement coverage
-in `internal/`) using only the standard `testing` package and
-`controller-runtime`'s fake client — no external cluster required.
+The unit test suite uses the standard `testing` package, HTTP fixtures for
+OpenStack API behavior, and `controller-runtime`'s fake client. No external
+cluster is required.
 
 ### Lint and format
 
@@ -173,11 +173,11 @@ make build         # go build ./cmd/main.go
 ### Nix (reproducible, multi-arch + SBOM)
 
 CI uses `nix-build` for reproducible builds. The `tests` derivation runs
-`go fmt`, `go vet`, and the full unit-test suite inside the Nix sandbox — no
-external toolchain needed:
+`go fmt`, `go vet`, and the full unit test suite inside the Nix sandbox. No
+external toolchain is needed:
 
 ```sh
-# CI check: go fmt + go vet + 168 unit tests
+# CI check: go fmt + go vet + the full unit test suite
 nix-build nix -A tests
 
 # Build the manager binary only

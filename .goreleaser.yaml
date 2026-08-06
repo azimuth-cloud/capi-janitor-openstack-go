@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.17.1/www/docs/static/schema.json
+
+version: 2
+
+project_name: capi-janitor-openstack-go
+dist: .release/dist
+
+# Generate the standalone Kubernetes bundle from the committed manifests. The
+# tagged build points at the identically tagged Nix-built OCI image; snapshots
+# use a non-published placeholder tag and only validate packaging.
+before:
+  hooks:
+    - >-
+      make build-release-bundle
+      IMG=ghcr.io/azimuth-cloud/capi-janitor-openstack-go:{{ if .IsSnapshot }}snapshot{{ else }}{{ .Tag }}{{ end }}
+      BUNDLE=.release/install.yaml
+
+builds:
+  - id: manager
+    main: ./cmd
+    binary: manager
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: manager
+    ids:
+      - manager
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_v{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+  extra_files:
+    - glob: ./.release/install.yaml
+
+snapshot:
+  version_template: "{{ .Version }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^Merge '
+
+release:
+  # Keep the release private until the workflow has built every asset. The
+  # workflow publishes this draft only after the Nix image and Helm chart jobs
+  # have succeeded and GoReleaser has uploaded all binary assets.
+  draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: true
+  prerelease: auto
+  mode: replace
+  header: |
+    {{- if eq .Major "0" }}
+    > [!WARNING]
+    > The Go rewrite is still stabilising throughout the v0.x.y series and is not yet considered production-stable. Test migration and rollback before deployment.
+    {{ end }}
+  extra_files:
+    - glob: ./.release/install.yaml
+      name_template: install.yaml

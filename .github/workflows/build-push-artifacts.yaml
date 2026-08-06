@@ -1,12 +1,12 @@
 name: Publish artifacts
 
 on:
-  # Publish artifacts on every push to main and every tag
+  # Publish development artifacts from main and releases from SemVer tags.
   push:
     branches:
       - main
     tags:
-      - "*"
+      - "v*"
   # Also allow publication to be done via a workflow call
   # In this case, the chart version is returned as an output
   workflow_call:
@@ -15,7 +15,6 @@ on:
         type: string
         description: The ref to build.
         required: true
-        default: ${{ github.ref }}
     outputs:
       chart-version:
         description: The chart version that was published
@@ -63,6 +62,11 @@ jobs:
           IMAGE="ghcr.io/azimuth-cloud/capi-janitor-openstack-go"
           if [[ "$REF" == refs/tags/* ]]; then
             TAG="${REF#refs/tags/}"
+            SEMVER_TAG_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9]*[A-Za-z-][0-9A-Za-z-]*)))*)?$'
+            if (( ${#TAG} > 128 )) || [[ ! "$TAG" =~ $SEMVER_TAG_RE ]]; then
+              echo "Release tag must be OCI-compatible SemVer: vMAJOR.MINOR.PATCH[-PRERELEASE]" >&2
+              exit 1
+            fi
             TAGS="$IMAGE:$TAG $IMAGE:$SHA"
           elif [[ "$REF" == refs/heads/* ]]; then
             BRANCH="${REF#refs/heads/}"
@@ -117,7 +121,7 @@ jobs:
     # Only build and push the chart if the images built successfully
     needs: [build_push_images]
     outputs:
-      chart-version: ${{ steps.semver.outputs.version }}
+      chart-version: ${{ steps.artifact-versions.outputs.chart }}
     permissions:
       contents: write
       id-token: none
@@ -137,9 +141,64 @@ jobs:
         id: semver
         uses: azimuth-cloud/github-actions/semver@master
 
+      - name: Select the chart and image versions
+        id: artifact-versions
+        env:
+          BUILD_REF: ${{ inputs.ref || github.ref }}
+          SEMVER_VERSION: ${{ steps.semver.outputs.version }}
+          SHORT_SHA: ${{ steps.semver.outputs.short-sha }}
+        run: |
+          if [[ "$BUILD_REF" == refs/tags/* ]]; then
+            TAG="${BUILD_REF#refs/tags/}"
+            echo "chart=${TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "image=$TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "chart=$SEMVER_VERSION" >> "$GITHUB_OUTPUT"
+            echo "image=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish Helm charts
         uses: azimuth-cloud/github-actions/helm-publish@master
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          version: ${{ steps.semver.outputs.version }}
-          app-version: ${{ steps.semver.outputs.short-sha }}
+          version: ${{ steps.artifact-versions.outputs.chart }}
+          app-version: ${{ steps.artifact-versions.outputs.image }}
+
+  publish_github_release:
+    name: Publish GitHub release
+    if: startsWith(inputs.ref || github.ref, 'refs/tags/')
+    needs:
+      - build_push_images
+      - build_push_chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries and create the draft release
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the completed GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REF: ${{ inputs.ref || github.ref }}
+        run: |
+          TAG="${RELEASE_REF#refs/tags/}"
+          gh release edit "$TAG" --draft=false

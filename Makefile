@@ -1,6 +1,8 @@
 # Image URL used to set the manager image in generated/deployed manifests
 # (the image itself is built via Nix, see nix/default.nix).
 IMG ?= controller:latest
+# BUNDLE is the output path for the consolidated Kubernetes installation YAML.
+BUNDLE ?= dist/install.yaml
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -101,9 +103,18 @@ run: manifests generate fmt vet ## Run a controller from your host.
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
-	mkdir -p dist
-	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default > dist/install.yaml
+	$(MAKE) build-release-bundle IMG="$(IMG)" BUNDLE="$(BUNDLE)"
+
+.PHONY: build-release-bundle
+build-release-bundle: kustomize ## Build an install bundle from committed manifests without modifying the source tree.
+	@tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf -- "$$tmpdir"' EXIT; \
+	cp -R config "$$tmpdir/config"; \
+	cd "$$tmpdir/config/manager"; \
+	"$(KUSTOMIZE)" edit set image "controller=$(IMG)"; \
+	cd "$(CURDIR)"; \
+	mkdir -p "$(dir $(BUNDLE))"; \
+	"$(KUSTOMIZE)" build "$$tmpdir/config/default" > "$(BUNDLE)"
 
 ##@ Deployment
 

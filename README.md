@@ -106,6 +106,17 @@ helm upgrade ... --set retryDefaultDelay=120
 
 ## Installation
 
+### OpenStack credentials
+
+The release bundle does not include OpenStack credentials. Before installing the operator, make sure that each `OpenStackCluster` references a Secret in the same namespace through `spec.identityRef`. 
+The Secret must contain a `clouds.yaml` key with valid OpenStack credentials and may also contain a `cacert` key for a custom CA certificate.
+
+The operator uses `spec.identityRef.cloudName` to select an entry from
+`clouds.yaml`, when it is not set, the entry name defaults to `openstack`.
+In a standard CAPO deployment, this is the same credential Secret already used by CAPO, so no separate operator-wide credential Secret is required.
+
+Do not add credentials to the release bundle or commit them to the repository.
+
 ```sh
 helm repo add \
   cluster-api-janitor-openstack \
@@ -118,6 +129,9 @@ helm upgrade \
 ```
 
 ## Development
+
+Release tags, artifact version mapping, the pre-`v1` stability notice, and the
+publication workflow are documented in [Releasing and versioning](docs/releasing.md).
 
 ### Build
 

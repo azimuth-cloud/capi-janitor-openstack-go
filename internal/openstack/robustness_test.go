@@ -115,7 +115,7 @@ clouds:
       auth_url: %s
       application_credential_id: cred-id
       application_credential_secret: cred-secret
-`, srv.URL)
+`, identityV3URL(srv.URL))
 	session, err := openstack.Authenticate(context.Background(), cloudsYAML, "openstack", "")
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)

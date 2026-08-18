@@ -17,6 +17,7 @@ updates:
     allow:
       - dependency-name: "actions/*"
       - dependency-name: "github-actions/*"
+      - dependency-name: "goreleaser/goreleaser-action"
 
   # Automatically propose PRs for Go module dependencies
   - package-ecosystem: gomod

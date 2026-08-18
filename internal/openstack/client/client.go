@@ -25,8 +25,8 @@ const (
 	userAgent        = "capi-janitor-openstack-go"
 )
 
-// UnsupportedAuthTypeError is returned when a cloud uses an authentication
-// method outside the two methods supported by the Janitor.
+// UnsupportedAuthTypeError indicates that the cloud uses an authentication
+// method that the Janitor does not support.
 type UnsupportedAuthTypeError struct {
 	AuthType string
 }
@@ -42,8 +42,8 @@ type Options struct {
 	CACert     string
 }
 
-// Client holds an authenticated Gophercloud provider and the endpoint settings
-// read from clouds.yaml.
+// Client holds an authenticated Gophercloud provider and endpoint settings
+// from clouds.yaml.
 //
 // Resource services use ProviderClient and EndpointOpts to create typed
 // Gophercloud clients. Cleanup and controller code use the small interfaces in
@@ -57,9 +57,9 @@ type Client struct {
 	authenticated           bool
 }
 
-// NewClient parses an in-memory clouds.yaml entry and authenticates with
-// Gophercloud. Both v3 application credential and v3 password authentication
-// are supported. Other authentication methods fail closed.
+// NewClient reads a clouds.yaml entry and authenticates with Gophercloud.
+// It supports v3 application credential and v3 password authentication.
+// It rejects all other authentication methods.
 func NewClient(ctx context.Context, opts Options) (*Client, error) {
 	loader, err := newYAMLLoader(opts.CloudsYAML)
 	if err != nil {
@@ -137,8 +137,8 @@ func NewClient(ctx context.Context, opts Options) (*Client, error) {
 }
 
 // ApplicationCredentialID returns the application credential ID from the
-// selected cloud entry without authenticating. Password-authenticated entries
-// return an empty ID.
+// selected cloud entry without authentication. Password entries return an
+// empty ID.
 func ApplicationCredentialID(cloudsYAML, cloudName string) (string, error) {
 	loader, err := newYAMLLoader(cloudsYAML)
 	if err != nil {
@@ -242,9 +242,8 @@ func (c *Client) ApplicationCredentialID() string {
 	return c.applicationCredentialID
 }
 
-// ProviderClient returns the authenticated provider used to create typed
-// Gophercloud service clients. Callers must not replace its authentication or
-// HTTP transport configuration.
+// ProviderClient returns the authenticated provider for Gophercloud service
+// clients. Callers must not replace its authentication or HTTP transport.
 func (c *Client) ProviderClient() *gophercloud.ProviderClient {
 	if c == nil {
 		return nil
@@ -260,8 +259,8 @@ func (c *Client) EndpointOpts() gophercloud.EndpointOpts {
 	return c.endpointOpts
 }
 
-// Endpoint finds a service endpoint for the configured region and interface.
-// It remains only for the legacy manual HTTP code and will be removed with it.
+// Endpoint returns a service endpoint for the configured region and interface.
+// The legacy HTTP implementation uses this method.
 func (c *Client) Endpoint(serviceType string) (string, error) {
 	if c == nil || c.provider == nil || c.provider.EndpointLocator == nil {
 		return "", &gophercloud.ErrEndpointNotFound{}
@@ -271,8 +270,8 @@ func (c *Client) Endpoint(serviceType string) (string, error) {
 	return c.provider.EndpointLocator(opts)
 }
 
-// Request sends an authenticated HTTP request. It remains only for the legacy
-// manual HTTP code. Resource services use typed Gophercloud packages instead.
+// Request sends an authenticated HTTP request for the legacy HTTP
+// implementation. Resource services use typed Gophercloud packages.
 func (c *Client) Request(ctx context.Context, method, url string, opts *gophercloud.RequestOpts) (*http.Response, error) {
 	return c.provider.Request(ctx, method, url, opts)
 }

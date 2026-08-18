@@ -1,5 +1,4 @@
-// Package openstack contains the current cleanup entry point and its legacy
-// compatibility code.
+// Package openstack runs cleanup and supports the legacy HTTP implementation.
 package openstack
 
 import (
@@ -17,11 +16,11 @@ import (
 )
 
 const (
-	// KeepProperty is the OpenStack volume metadata key that marks a volume as user-kept.
+	// KeepProperty is the OpenStack volume metadata key that preserves a volume.
 	KeepProperty = "janitor.capi.azimuth-cloud.com/keep"
 )
 
-// AuthenticationError is returned when OpenStack authentication fails.
+// AuthenticationError indicates that OpenStack authentication failed.
 type AuthenticationError struct {
 	UserID string
 }
@@ -30,12 +29,12 @@ func (e *AuthenticationError) Error() string {
 	return fmt.Sprintf("failed to authenticate as user: %s", e.UserID)
 }
 
-// UnsupportedAuthTypeError is returned when clouds.yaml uses an unsupported
+// UnsupportedAuthTypeError indicates that clouds.yaml uses an unsupported
 // authentication method.
 type UnsupportedAuthTypeError = openstackclient.UnsupportedAuthTypeError
 
-// CatalogError is returned when a required service is absent from the
-// OpenStack catalog.
+// CatalogError indicates that the OpenStack catalog does not contain a
+// required service.
 type CatalogError struct {
 	ServiceType string
 }
@@ -44,22 +43,21 @@ func (e *CatalogError) Error() string {
 	return fmt.Sprintf("service type %s not found in OpenStack service catalog", e.ServiceType)
 }
 
-// Session keeps the API used by the legacy manual HTTP cleanup code.
-// Authentication and request handling already use Gophercloud.
+// Session provides the API used by the legacy HTTP cleanup implementation.
+// Gophercloud handles authentication and requests.
 type Session struct {
 	client *openstackclient.Client
 
-	// httpClient is retained only for small package-level transport tests. A
-	// production Session created by Authenticate always uses client.Request.
+	// httpClient supports transport tests in this package. Authenticate creates
+	// sessions that use client.Request.
 	httpClient *http.Client
 
-	// SleepFunc is called instead of time.Sleep for polling waits.
-	// A nil value defaults to time.Sleep.
+	// SleepFunc replaces time.Sleep during polling. A nil value uses time.Sleep.
 	SleepFunc func(time.Duration)
 }
 
-// Authenticate creates a Gophercloud provider from the selected in-memory
-// clouds.yaml entry.
+// Authenticate creates a Gophercloud provider from the selected clouds.yaml
+// entry.
 func Authenticate(ctx context.Context, cloudsYAML, cloudName, caCert string) (*Session, error) {
 	client, err := openstackclient.NewClient(ctx, openstackclient.Options{
 		CloudsYAML: cloudsYAML,
@@ -114,7 +112,7 @@ func (s *Session) endpointFor(serviceTypes ...string) (string, error) {
 	return "", &CatalogError{ServiceType: strings.Join(serviceTypes, " or ")}
 }
 
-// doGet issues an authenticated Gophercloud GET and returns its response body.
+// doGet sends an authenticated GET request and returns the response body.
 func (s *Session) doGet(ctx context.Context, url string) ([]byte, error) {
 	if s.client != nil {
 		response, err := s.client.Request(ctx, http.MethodGet, url, &gophercloud.RequestOpts{KeepResponseBody: true})
@@ -125,8 +123,8 @@ func (s *Session) doGet(ctx context.Context, url string) ([]byte, error) {
 		return io.ReadAll(response.Body)
 	}
 
-	// Package tests can exercise body read failures without constructing an
-	// authenticated provider. Production sessions never use this branch.
+	// Package tests use this branch to test body read failures without an
+	// authenticated provider. Sessions from Authenticate do not use this branch.
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -139,7 +137,7 @@ func (s *Session) doGet(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(response.Body)
 }
 
-// doDelete issues an idempotent authenticated Gophercloud DELETE.
+// doDelete sends an idempotent authenticated DELETE request.
 func (s *Session) doDelete(ctx context.Context, url string) error {
 	_, err := s.client.Request(ctx, http.MethodDelete, url, &gophercloud.RequestOpts{
 		OkCodes: []int{http.StatusOK, http.StatusAccepted, http.StatusNoContent, http.StatusNotFound},
@@ -147,8 +145,8 @@ func (s *Session) doDelete(ctx context.Context, url string) error {
 	return err
 }
 
-// isTransient returns true for the OpenStack states that the existing cleanup
-// path verifies by listing the resource again.
+// isTransient reports whether cleanup must list a resource again after a
+// delete request.
 func isTransient(err error) bool {
 	return gophercloud.ResponseCodeIs(err, http.StatusBadRequest) || gophercloud.ResponseCodeIs(err, http.StatusConflict)
 }

@@ -1,2 +1,2 @@
-// Package network provides Neutron-backed cleanup services.
+// Package network provides cleanup operations for Neutron resources.
 package network

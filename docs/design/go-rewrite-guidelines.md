@@ -109,9 +109,9 @@ The cleanup package decides:
 This package should use small domain types and ordinary Go interfaces. 
 It should not depend on controller-runtime or concrete Gophercloud service clients.
 
-### OpenStack adapters
+### OpenStack resource services
 
-The OpenStack adapters handle:
+The OpenStack resource services handle:
 
 - authentication and service client creation
 - listing every page of candidate resources
@@ -120,7 +120,7 @@ The OpenStack adapters handle:
 - classifying OpenStack errors
 - propagating the reconcile context
 
-The adapters provide facts. They do not decide whether a resource belongs to a cluster.
+The services provide facts. They do not decide whether a resource belongs to a cluster.
 
 ## Controller conventions
 
@@ -164,7 +164,7 @@ Gophercloud `v2` and Gophercloud `utils` should be direct dependencies.
 The project should not maintain its own implementation of Keystone authentication, service catalog parsing, endpoint construction, token refresh, pagination, or
 service-specific response models.
 
-The initial adapter should deliberately retain the Python controller's supported identity surface:
+The initial OpenStack client should deliberately retain the Python controller's supported identity surface:
 
 - a same namespace Secret referenced by `OpenStackCluster.spec.identityRef`
 - a `clouds.yaml` entry selected by `cloudName`
@@ -230,7 +230,7 @@ The test suite should be organised around the boundaries above.
 
 Pure unit tests cover policy, ownership filters, negative near-matches, ordering, and credential checkpoint transitions.
 
-Gophercloud adapter tests use HTTP fixtures to cover authentication, endpoint selection, pagination, delete options, response classification, and context cancellation.
+Gophercloud service tests use HTTP fixtures to cover authentication, endpoint selection, pagination, delete options, response classification, and context cancellation.
 
 Controller tests use envtest with the required CAPI and CAPO CRDs. 
 They cover finalizers, pause, watch filters, Secret changes, retries, conflicts, and restarts between cleanup phases.

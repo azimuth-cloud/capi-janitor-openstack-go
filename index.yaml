@@ -2,8 +2,21 @@ apiVersion: v1
 entries:
   cluster-api-janitor-openstack:
   - apiVersion: v2
+    appVersion: 02e3491
+    created: "2026-08-19T18:22:15.933585397Z"
+    description: Helm chart for deploying the Cluster API Janitor for OpenStack
+    digest: fd6e0678897f0fc04aa833cc6831fbcc147f261bd85d57d3dce666fce962ab0c
+    home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
+    name: cluster-api-janitor-openstack
+    sources:
+    - https://github.com/azimuth-cloud/capi-janitor-openstack-go
+    type: application
+    urls:
+    - cluster-api-janitor-openstack-0.1.0-dev.0.main.19.tgz
+    version: 0.1.0-dev.0.main.19
+  - apiVersion: v2
     appVersion: c64f813
-    created: "2026-08-18T13:27:30.668283059Z"
+    created: "2026-08-19T18:22:15.933306716Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: afeca25bc55bcb6e17619cec66d8b36a8ac786366079a362453177e0f7475262
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -16,7 +29,7 @@ entries:
     version: 0.1.0-dev.0.main.18
   - apiVersion: v2
     appVersion: a07ee1e
-    created: "2026-08-18T13:27:30.668117062Z"
+    created: "2026-08-19T18:22:15.933049368Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: e9523861c8170efc23b33262de2722c3b9fe19f923747ae712365f1d14054ec0
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -29,7 +42,7 @@ entries:
     version: 0.1.0-dev.0.main.17
   - apiVersion: v2
     appVersion: 8a9d869
-    created: "2026-08-18T13:27:30.667948968Z"
+    created: "2026-08-19T18:22:15.932814464Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 01907853ff7daea3752882be492d29368360cc67ff665e7f8e31e9204a969d0e
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -42,7 +55,7 @@ entries:
     version: 0.1.0-dev.0.main.16
   - apiVersion: v2
     appVersion: f35e49a
-    created: "2026-08-18T13:27:30.66764366Z"
+    created: "2026-08-19T18:22:15.932530025Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 71326a3f221baf99ef7cc0bfcfccb42ca6e087ba9706f2aba59d6b0683960e13
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -55,7 +68,7 @@ entries:
     version: 0.1.0-dev.0.main.15
   - apiVersion: v2
     appVersion: 82aa147
-    created: "2026-08-18T13:27:30.667475718Z"
+    created: "2026-08-19T18:22:15.932016986Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 14de3f0cd6599b57aff4c8279c33e5e6d9e37c132429c9045989f3fc6cbacf9b
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -68,7 +81,7 @@ entries:
     version: 0.1.0-dev.0.main.14
   - apiVersion: v2
     appVersion: 4d14a0c
-    created: "2026-08-18T13:27:30.667294602Z"
+    created: "2026-08-19T18:22:15.931472605Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: af493ee0cd68617e28fe2e2eae68f6864b4f16c3dc11decfb605989bb159a222
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -81,7 +94,7 @@ entries:
     version: 0.1.0-dev.0.main.13
   - apiVersion: v2
     appVersion: a3e2561
-    created: "2026-08-18T13:27:30.667108779Z"
+    created: "2026-08-19T18:22:15.930987303Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 4f39382fba93f2ac60b00566e4a9575b570318f7f51c5cc7e3e18c0b12432eec
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -94,7 +107,7 @@ entries:
     version: 0.1.0-dev.0.main.12
   - apiVersion: v2
     appVersion: ef93b32
-    created: "2026-08-18T13:27:30.666897547Z"
+    created: "2026-08-19T18:22:15.930320387Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 64a039974f7707a187ca7cd5fa775713e114c1f329b90acb4b270489115e8764
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -105,4 +118,4 @@ entries:
     urls:
     - cluster-api-janitor-openstack-0.1.0-dev.0.main.11.tgz
     version: 0.1.0-dev.0.main.11
-generated: "2026-08-18T13:27:30.666536304Z"
+generated: "2026-08-19T18:22:15.929883729Z"

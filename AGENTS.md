@@ -1,349 +1,228 @@
-# cluster-api-janitor-openstack - AI Agent Guide
+# Cluster API Janitor for OpenStack agent guide
 
-## Project Structure
+## Project purpose
 
-**Single-group layout (default):**
-```
-cmd/main.go                    Manager entry (registers controllers/webhooks)
-api/<version>/*_types.go       CRD schemas (+kubebuilder markers)
-api/<version>/zz_generated.*   Auto-generated (DO NOT EDIT)
-internal/controller/*          Reconciliation logic
-internal/webhook/*             Validation/defaulting (if present)
-config/crd/bases/*             Generated CRDs (DO NOT EDIT)
-config/rbac/role.yaml          Generated RBAC (DO NOT EDIT)
-config/samples/*               Example CRs (edit these)
-Makefile                       Build/test/deploy commands
-PROJECT                        Kubebuilder metadata Auto-generated (DO NOT EDIT)
-```
+This repository contains the Go replacement for the Python
+`cluster-api-janitor-openstack` controller. It removes workload OpenStack
+resources that can block deletion of a CAPO cluster. It is not a general project
+cleaner and must not take ownership of CAPO-managed infrastructure.
 
-**Multi-group layout** (for projects with multiple API groups):
-```
-api/<group>/<version>/*_types.go       CRD schemas by group
-internal/controller/<group>/*          Controllers by group
-internal/webhook/<group>/<version>/*   Webhooks by group and version (if present)
-```
+The replacement release keeps the legacy finalizer and the Python resource
+ownership boundary. It may correct unsafe failure handling and add an approved
+compatibility feature, but it must not broaden a deletion selector without a
+separate design review.
 
-Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check the `PROJECT` file for `multigroup: true`.
+## Start with the design
 
-**To convert to multi-group layout:**
-1. Run: `kubebuilder edit --multigroup=true`
-2. Move APIs: `mkdir -p api/<group> && mv api/<version> api/<group>/`
-3. Move controllers: `mkdir -p internal/controller/<group> && mv internal/controller/*.go internal/controller/<group>/`
-4. Move webhooks (if present): `mkdir -p internal/webhook/<group> && mv internal/webhook/<version> internal/webhook/<group>/`
-5. Update import paths in all files
-6. Fix `path` in `PROJECT` file for each resource
-7. Update test suite CRD paths (add one more `..` to relative paths)
+Read these files before changing cleanup behavior:
 
-## Critical Rules
+- `docs/design/go-rewrite-guidelines.md` defines the target controller design
+- `docs/design/cleanup-behaviour-matrix.md` records compatibility decisions
+- `docs/design/resource-ownership-matrix.md` defines destructive selectors
+- `docs/design/capo-integration-boundary.md` separates CAPO and Janitor ownership
+- `ROADMAP.md` records current implementation status and release blockers
 
-### Never Edit These (Auto-Generated)
-- `config/crd/bases/*.yaml` - from `make manifests`
-- `config/rbac/role.yaml` - from `make manifests`
-- `config/webhook/manifests.yaml` - from `make manifests`
-- `**/zz_generated.*.go` - from `make generate`
-- `PROJECT` - from `kubebuilder [OPTIONS]`
+The design documents are normative. The roadmap is the progress report. If code
+and design differ, report the difference instead of silently treating current
+code as the intended behavior.
 
-### Never Remove Scaffold Markers
-Do NOT delete `// +kubebuilder:scaffold:*` comments. CLI injects code at these markers.
+## Repository layout
 
-### Keep Project Structure
-Do not move files around. The CLI expects files in specific locations.
-
-### Always Use CLI Commands
-Always use `kubebuilder create api` and `kubebuilder create webhook` to scaffold. Do NOT create files manually.
-
-### E2E Tests Require an Isolated Kind Cluster
-The e2e tests are designed to validate the solution in an isolated environment (similar to GitHub Actions CI).
-Ensure you run them against a dedicated [Kind](https://kind.sigs.k8s.io/) cluster (not your “real” dev/prod cluster).
-
-## After Making Changes
-
-**After editing `*_types.go` or markers:**
-```
-make manifests  # Regenerate CRDs/RBAC from markers
-make generate   # Regenerate DeepCopy methods
+```text
+cmd/main.go                     manager entry point
+internal/controller/            Kubernetes reconciliation and policy resolution
+internal/cleanup/               target domain types, ports, and cleanup runner boundary
+internal/openstack/             authentication and active purge integration
+internal/openstack/client/      Gophercloud provider and service client creation
+internal/openstack/network/     typed Neutron operations
+internal/openstack/loadbalancer/ typed Octavia operations
+internal/openstack/volume/      typed Cinder operations
+internal/openstack/identity/    typed Keystone operations
+chart/                          Helm chart and helm-unittest snapshots
+config/                         Kustomize deployment, RBAC, metrics, and network policy
+nix/                            manager, OCI image, test, and SBOM derivations
+test/e2e/                       Kind manager and metrics smoke scaffold
+docs/design/                    behavior and ownership contracts
 ```
 
-**After editing `*.go` files:**
+There is no project-owned API or webhook. CAPO's public API types are the
+watched contract. Do not scaffold a CRD, status API, or webhook unless an
+approved design requires one.
+
+`internal/openstack/gophercloud_resources.go` is the active typed purge path.
+`internal/openstack/resources.go` is a legacy manual HTTP implementation. Do not
+add new behavior to the legacy path. Remove it only after equivalent regressions
+cover the active path.
+
+## Safety invariants
+
+These rules apply to every cleanup change:
+
+- Scope discovery to the authenticated project and selected region.
+- Apply the exact selector from the ownership matrix before passing an ID to a
+  delete method.
+- Treat the service load balancer prefix as necessary but not sufficient until
+  the shared load balancer and reserved-tag release decision is complete.
+- Use the same selector for deletion and later verification.
+- List every page. Treat an incomplete inventory as a failure.
+- Keep close negative fixtures for a different cluster, partial match, empty
+  field, project, and region.
+- Treat accepted deletion as pending until a later observation proves absence.
+- Keep the finalizer when identity, discovery, deletion, or verification is
+  incomplete.
+- Delete an application credential last, after persisting the
+  resources-verified checkpoint.
+- Do not delete a credential or Secret while another finalizer remains.
+- Do not delete CAPO-owned networks, subnets, routers, ports, security groups,
+  API server load balancers, bastions, or `OpenStackMachine` servers.
+- Do not turn `NotFound` into authorization for an object that never passed the
+  selector.
+
+Any proposed selector change must follow the
+[ownership change rules](docs/design/resource-ownership-matrix.md#changing-an-ownership-rule).
+
+## Controller rules
+
+- Reconciliation is level based and idempotent.
+- One reconcile runs one bounded cleanup iteration.
+- Use `RequeueAfter` for expected OpenStack convergence. Return operational
+  errors for controller-runtime backoff.
+- Do not call `time.Sleep`, poll in a loop, or mutate an annotation only to
+  trigger another reconcile.
+- Honor CAPI pause and the standard watch filter.
+- Watch referenced Secrets so that a repaired identity can unblock deletion.
+- Validate `identityRef.type` before reading a Secret or contacting OpenStack.
+- Kubernetes `Secret.Data` already contains decoded bytes. Do not base64-decode
+  it again.
+- Patch Janitor-owned metadata without replacing concurrent updates.
+- Do not write Janitor conditions into CAPO-owned status.
+- Preserve `janitor.capi.stackhpc.com` until a separate migration design changes
+  it.
+- Never run the Python and Go controllers against the same objects.
+
+Events and metrics must describe the lifecycle point accurately. A successful
+resource purge is not a completed cleanup if Secret deletion or finalizer
+removal can still fail. An application credential self-deletion `403` needs a
+visible credential-may-remain outcome.
+
+## OpenStack rules
+
+Use Gophercloud for authentication, endpoint selection, reauthentication,
+pagination, request models, and response extraction. Do not add a second service
+catalog or token implementation.
+
+Keep transport and policy separate:
+
+- resource services list facts and delete already-authorized IDs
+- `internal/cleanup` decides ownership, policy, phase, and outcome
+- the controller resolves Kubernetes objects and translates cleanup outcomes
+  into reconcile results
+
+Create optional service clients lazily. A disabled cleanup phase must not
+require an endpoint or permission for that service. Propagate the reconcile
+context through every OpenStack call.
+
+The replacement identity contract is a same-namespace Secret with a selected
+`clouds.yaml` entry, optional `cacert`, and explicitly supported application
+credential or password authentication. Do not enable another Gophercloud auth
+method by accident.
+
+## Tests
+
+Use the smallest test that proves the boundary:
+
+- pure Go tests for selectors, policy, ordering, outcomes, and checkpoint state
+- HTTP fixtures for Gophercloud authentication, pagination, request options,
+  error classification, and context cancellation
+- envtest with CAPI and CAPO CRDs for watches, pause, filters, Secrets,
+  conflicts, finalizers, and restarts
+- Kind for manager, packaging, and cluster integration smoke tests
+- a dedicated OpenStack project for destructive owned and non-owned fixtures
+
+Do not infer coverage from a Make target name. The Kind suite is intended as
+packaging smoke coverage, but its current image reference mismatch must be
+fixed before it provides that evidence. Check the
+[roadmap](ROADMAP.md#4-prove-the-controller-boundary) for current suite
+limitations.
+
+Never run destructive cleanup tests against a development or production
+project with unrelated resources. Use an isolated project, explicit fixture
+IDs, and teardown that preserves evidence after a failed boundary assertion.
+
+## Development commands
+
+```sh
+make help
+make fmt
+make vet
+make test
+make build
+make run
+make test-e2e
+make build-installer IMG=<registry>/<image>:<tag>
 ```
-make lint-fix   # Auto-fix code style
-make test       # Run unit tests
-```
 
-## CLI Commands Cheat Sheet
+`make test-e2e` creates or reuses the dedicated
+`cluster-api-janitor-openstack-test-e2e` Kind cluster. A successful run deletes
+it; a failed run may leave it for inspection. Do not point the suite at a real
+cluster.
 
-### Create API (your own types)
-```bash
-kubebuilder create api --group <group> --version <version> --kind <Kind>
-```
+After a Go change, run at least `make fmt`, `make vet`, and the affected tests.
+Run `make test` before handing off a complete change when dependency downloads
+are available. For a documentation-only change, verify links, headings,
+whitespace, and references to actual files and targets.
 
-### Deploy Image Plugin (scaffold to deploy/manage ANY container image)
+## Generated and packaged files
 
-Generate a controller that deploys and manages a container image (nginx, redis, memcached, your app, etc.):
+- `config/rbac/role.yaml` is generated from Kubebuilder RBAC markers by
+  `make manifests`. Edit the markers, then regenerate the file.
+- `PROJECT` is Kubebuilder metadata. Do not hand-edit it for an ordinary code
+  change.
+- Helm snapshots under `chart/tests/__snapshot__/` are generated by
+  helm-unittest. Update them only with the chart change they represent.
+- `.release/install.yaml` and `.release/dist/` are local release staging output
+  and are not committed.
 
-```bash
-# Example: deploying memcached
-kubebuilder create api --group example.com --version v1alpha1 --kind Memcached \
-  --image=memcached:alpine \
-  --plugins=deploy-image.go.kubebuilder.io/v1-alpha
-```
+This repository has no generated project API types or CRD bases today. Do not
+copy generic Kubebuilder instructions that assume they exist.
 
-Scaffolds good-practice code: reconciliation logic, status conditions, finalizers, RBAC. Use as a reference implementation.
+## Documentation style
 
+Write for Kubernetes and OpenStack contributors who need to review a destructive
+decision quickly.
 
-### Create Webhooks
-```bash
-# Validation + defaulting
-kubebuilder create webhook --group <group> --version <version> --kind <Kind> \
-  --defaulting --programmatic-validation
+- Use present tense, active voice, and U.S. English.
+- Prefer short sentences and concrete nouns.
+- State current behavior, target behavior, and open work separately.
+- Avoid generated-sounding epics, user stories, repeated Gherkin, ceremonial
+  summaries, and unverified progress percentages.
+- Do not use a static test count or coverage percentage as proof of safety.
+- Use `LoadBalancer` for the Kubernetes API value and “load balancer” for the
+  general resource.
+- Keep commands, flags, fields, URLs, and resource names exact.
+- Link an upstream issue or code path when it is the reason for a compatibility
+  rule.
 
-# Conversion webhook (for multi-version APIs)
-kubebuilder create webhook --group <group> --version v1 --kind <Kind> \
-  --conversion --spoke v2
-```
+For Go declaration comments, start with the exported name. Keep error strings
+lowercase so callers can wrap them.
 
-### Controller for Core Kubernetes Types
-```bash
-# Watch Pods
-kubebuilder create api --group core --version v1 --kind Pod \
-  --controller=true --resource=false
-
-# Watch Deployments
-kubebuilder create api --group apps --version v1 --kind Deployment \
-  --controller=true --resource=false
-```
-
-### Controller for External Types (e.g., from other operators)
-
-Watch resources from external APIs (cert-manager, Argo CD, Istio, etc.):
-
-```bash
-# Example: watching cert-manager Certificate resources
-kubebuilder create api \
-  --group cert-manager --version v1 --kind Certificate \
-  --controller=true --resource=false \
-  --external-api-path=github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1 \
-  --external-api-domain=io \
-  --external-api-module=github.com/cert-manager/cert-manager
-```
-
-**Note:** Use `--external-api-module=<module>@<version>` only if you need a specific version. Otherwise, omit `@<version>` to use what's in go.mod.
-
-### Webhook for External Types
-
-```bash
-# Example: validating external resources
-kubebuilder create webhook \
-  --group cert-manager --version v1 --kind Issuer \
-  --defaulting \
-  --external-api-path=github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1 \
-  --external-api-domain=io \
-  --external-api-module=github.com/cert-manager/cert-manager
-```
-
-## Testing & Development
-
-```bash
-make test              # Run unit tests (uses envtest: real K8s API + etcd)
-make run               # Run locally (uses current kubeconfig context)
-```
-
-Tests use **Ginkgo + Gomega** (BDD style). Check `suite_test.go` for setup.
-
-## Kubernetes Writing Style
-
-Write comments, API documentation, events, and logs so that Kubernetes and
-OpenStack contributors can read them quickly.
-
-- Use present tense and active voice.
-- Use short and direct sentences. Split a sentence when it explains more than
-  one action or rule.
-- Avoid jargon, idioms, future promises, and unnecessary qualifiers.
-- Avoid hyphenated prose when plain words work. Keep hyphens that are part of
-  commands, flags, URLs, API fields, resource names, and quoted external text.
-- Start a Go declaration comment with the exact exported name.
-- Use Kubernetes API names exactly. Use `LoadBalancer` for the API value and
-  `load balancer` for the general resource.
-- Use U.S. English spelling in documentation and comments.
-- Keep error strings lowercase because callers can wrap them.
-- Follow the logging rules in the Logging section. Do not log an error and
-  return the same error unless the log adds information at a deliberate
-  verbosity level.
-
-Use these references for every API, documentation, comment, event, and logging
-change:
+Follow these references for API, documentation, Event, and logging changes:
 
 - [Kubernetes API conventions](https://github.com/kubernetes/community/blob/main/contributors/devel/sig-architecture/api-conventions.md)
 - [Kubernetes documentation style](https://kubernetes.io/docs/contribute/style/style-guide/)
 - [Kubernetes logging](https://github.com/kubernetes/community/blob/main/contributors/devel/sig-instrumentation/logging.md)
 
-## Deployment Workflow
+## Logging and review
 
-```bash
-# 1. Regenerate manifests
-make manifests generate
+Kubernetes log messages start with a capital letter, use active voice, name the
+object type, and do not end with a period. Use balanced structured key-value
+pairs. Do not log an error and return the same error unless the log adds useful
+context at a deliberate verbosity level.
 
-# 2. Build & deploy
-export IMG=<registry>/<project>:tag
-nix-build nix -A image -o image.tar.gz  # produces an OCI archive, see nix/default.nix
-skopeo copy docker-archive:image.tar.gz "docker://$IMG"  # or: kind load image-archive image.tar.gz --name <cluster>
-make deploy IMG=$IMG
+A pull request that can change cleanup must follow the
+[destructive change checklist](CONTRIBUTING.md#destructive-change-checklist). It
+must also state which Python behavior it preserves or corrects and whether the
+change is safe before the remaining roadmap work is complete.
 
-# 3. Test
-kubectl apply -k config/samples/
-
-# 4. Debug
-kubectl logs -n <project>-system deployment/<project>-controller-manager -c manager -f
-```
-
-### API Design
-
-**Key markers for** `api/<version>/*_types.go`:
-
-```go
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
-
-// On fields:
-// +kubebuilder:validation:Required
-// +kubebuilder:validation:Minimum=1
-// +kubebuilder:validation:MaxLength=100
-// +kubebuilder:validation:Pattern="^[a-z]+$"
-// +kubebuilder:default="value"
-```
-
-- **Use** `metav1.Condition` for status (not custom string fields)
-- **Use predefined types**: `metav1.Time` instead of `string` for dates
-- **Follow K8s API conventions**: Standard field names (`spec`, `status`, `metadata`)
-
-### Controller Design
-
-**RBAC markers in** `internal/controller/*_controller.go`:
-
-```go
-// +kubebuilder:rbac:groups=mygroup.example.com,resources=mykinds,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=mygroup.example.com,resources=mykinds/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=mygroup.example.com,resources=mykinds/finalizers,verbs=update
-// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-```
-
-**Implementation rules:**
-- **Idempotent reconciliation**: Safe to run multiple times
-- **Re-fetch before updates**: `r.Get(ctx, req.NamespacedName, obj)` before `r.Update` to avoid conflicts
-- **Structured logging**: `log := log.FromContext(ctx); log.Info("msg", "key", val)`
-- **Owner references**: Enable automatic garbage collection (`SetControllerReference`)
-- **Watch secondary resources**: Use `.Owns()` or `.Watches()`, not just `RequeueAfter`
-- **Finalizers**: Clean up external resources (buckets, VMs, DNS entries)
-
-### Logging
-
-**Follow Kubernetes logging message style guidelines:**
-
-- Start from a capital letter
-- Do not end the message with a period
-- Active voice: subject present (`"Deployment could not create Pod"`) or omitted (`"Could not create Pod"`)
-- Past tense: `"Could not delete Pod"` not `"Cannot delete Pod"`
-- Specify object type: `"Deleted Pod"` not `"Deleted"`
-- Balanced key-value pairs
-
-```go
-log.Info("Starting reconciliation")
-log.Info("Created Deployment", "name", deploy.Name)
-log.Error(err, "Could not create Pod", "name", name)
-```
-
-**Reference:** https://github.com/kubernetes/community/blob/main/contributors/devel/sig-instrumentation/logging.md#message-style-guidelines
-
-### Webhooks
-- **Create all types together**: `--defaulting --programmatic-validation --conversion`
-- **When`--force`is used**: Backup custom logic first, then restore after scaffolding
-- **For multi-version APIs**: Use hub-and-spoke pattern (`--conversion --spoke v2`)
-  - Hub version: Usually oldest stable version (v1)
-  - Spoke versions: Newer versions that convert to/from hub (v2, v3)
-  - Example: `--group crew --version v1 --kind Captain --conversion --spoke v2` (v1 is hub, v2 is spoke)
-
-### Learning from Examples
-
-The **deploy-image plugin** scaffolds a complete controller following good practices. Use it as a reference implementation:
-
-```bash
-kubebuilder create api --group example --version v1alpha1 --kind MyApp \
-  --image=<your-image> --plugins=deploy-image.go.kubebuilder.io/v1-alpha
-```
-
-Generated code includes: status conditions (`metav1.Condition`), finalizers, owner references, events, idempotent reconciliation.
-
-## Distribution Options
-
-### Option 1: YAML Bundle (Kustomize)
-
-```bash
-# Generate dist/install.yaml from Kustomize manifests
-make build-installer IMG=<registry>/<project>:tag
-```
-
-**Key points:**
-- The `dist/install.yaml` is generated from Kustomize manifests (CRDs, RBAC, Deployment)
-- Commit this file to your repository for easy distribution
-- Users only need `kubectl` to install (no additional tools required)
-
-**Example:** Users install with a single command:
-```bash
-kubectl apply -f https://raw.githubusercontent.com/<org>/<repo>/<tag>/dist/install.yaml
-```
-
-### Option 2: Helm Chart
-
-```bash
-kubebuilder edit --plugins=helm/v2-alpha                      # Generates dist/chart/ (default)
-kubebuilder edit --plugins=helm/v2-alpha --output-dir=charts  # Generates charts/chart/
-```
-
-**For development:**
-```bash
-make helm-deploy IMG=<registry>/<project>:<tag>          # Deploy manager via Helm
-make helm-deploy IMG=$IMG HELM_EXTRA_ARGS="--set ..."    # Deploy with custom values
-make helm-status                                         # Show release status
-make helm-uninstall                                      # Remove release
-make helm-history                                        # View release history
-make helm-rollback                                       # Rollback to previous version
-```
-
-**For end users/production:**
-```bash
-helm install my-release ./<output-dir>/chart/ --namespace <ns> --create-namespace
-```
-
-**Important:** If you add webhooks or modify manifests after initial chart generation:
-1. Backup any customizations in `<output-dir>/chart/values.yaml` and `<output-dir>/chart/manager/manager.yaml`
-2. Re-run: `kubebuilder edit --plugins=helm/v2-alpha --force` (use same `--output-dir` if customized)
-3. Manually restore your custom values from the backup
-
-### Publish Container Image
-
-```bash
-export IMG=<registry>/<project>:<version>
-nix-build nix -A image -o image.tar.gz  # see nix/default.nix
-skopeo copy docker-archive:image.tar.gz "docker://$IMG"
-```
-
-## References
-
-### Essential Reading
-- **Kubebuilder Book**: https://book.kubebuilder.io (comprehensive guide)
-- **controller-runtime FAQ**: https://github.com/kubernetes-sigs/controller-runtime/blob/main/FAQ.md (common patterns and questions)
-- **Good Practices**: https://book.kubebuilder.io/reference/good-practices.html (why reconciliation is idempotent, status conditions, etc.)
-- **Logging Conventions**: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-instrumentation/logging.md#message-style-guidelines (message style, verbosity levels)
-
-### API Design & Implementation
-- **API Conventions**: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md
-- **Operator Pattern**: https://kubernetes.io/docs/concepts/extend-kubernetes/operator/
-- **Markers Reference**: https://book.kubebuilder.io/reference/markers.html
-
-### Tools & Libraries
-- **controller-runtime**: https://github.com/kubernetes-sigs/controller-runtime
-- **controller-tools**: https://github.com/kubernetes-sigs/controller-tools
-- **Kubebuilder Repo**: https://github.com/kubernetes-sigs/kubebuilder
+Unresolved destructive behavior belongs in a design decision or the roadmap,
+not in guessed code.

@@ -4,9 +4,10 @@ Git tags are the source of truth for released versions. Do not update a version
 file or ask GoReleaser to calculate the next version.
 
 > [!WARNING]
-> The Go rewrite is still stabilising throughout the `v0.x.y` series and is not
-> yet considered production-stable. Test migration from the Python controller
-> and rollback to it before deploying a release.
+> Current Go releases are development releases and are not ready to replace the
+> Python controller in production. A pre-v1 version may later meet the
+> replacement criteria; the version number alone does not establish readiness.
+> See the [roadmap](../ROADMAP.md).
 
 ## Version tags
 
@@ -30,8 +31,10 @@ A tag maps to the artifacts as follows:
 | Binary archives | `capi-janitor-openstack-go_v0.2.0_linux_<arch>.tar.gz` |
 | Kubernetes bundle | `install.yaml`, referencing the `v0.2.0` OCI image |
 
-The OCI workflow also publishes a commit-SHA tag. Branch builds continue to use
-branch and commit-SHA tags, but they do not create GitHub Releases.
+The OCI workflow adds a commit-SHA tag to every image. A direct branch build
+also adds a branch tag, a release-tag build adds the release tag, and the pull
+request workflow publishes only the head SHA tag. Branch and pull request builds
+do not create GitHub Releases.
 
 ## What builds each artifact
 
@@ -40,7 +43,7 @@ branch and commit-SHA tags, but they do not create GitHub Releases.
 - The existing Helm publisher packages and publishes the chart after both Nix
   image architectures have been pushed.
 - GoReleaser builds the Linux `amd64` and `arm64` `manager` binaries, archives
-  them with the README and licence, creates SHA-256 checksums, and attaches the
+  them with the README and license, creates SHA-256 checksums, and attaches the
   standalone Kubernetes bundle to the GitHub Release.
 
 The Nix image and GoReleaser archives are separate builds from the same tagged
@@ -48,8 +51,9 @@ commit; they are not expected to contain byte-identical binaries.
 
 ## Before tagging
 
-1. Confirm the release acceptance criteria in
-   [the Go rewrite guidelines](design/go-rewrite-guidelines.md) are satisfied.
+1. State whether the tag is a development release or the replacement release.
+   Development release notes must say that production replacement criteria are
+   still open.
 2. Confirm CI is green, including the `GoReleaser snapshot` job. This snapshot
    builds archives, checksums, and the Kubernetes bundle without publishing
    anything.
@@ -60,6 +64,18 @@ commit; they are not expected to contain byte-identical binaries.
    git tag -a v0.2.0 -m "v0.2.0"
    git push origin v0.2.0
    ```
+
+## Before declaring a replacement release
+
+1. Confirm the acceptance criteria in the
+   [Go rewrite guidelines](design/go-rewrite-guidelines.md) and the evidence
+   table in the [roadmap](../ROADMAP.md#replacement-release-criteria) are
+   complete.
+2. Attach the tested dependency matrix, real OpenStack owned and non-owned
+   fixture result, and Python migration and rollback result to the release
+   record.
+3. Publish the operator migration, rollback, and blocked-deletion recovery
+   runbooks.
 
 ## Publication order
 

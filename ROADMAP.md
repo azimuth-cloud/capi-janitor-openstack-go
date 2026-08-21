@@ -2,11 +2,18 @@
 
 ## Context
 
-The current project is written in Python (asyncio + kopf + easykube + httpx). It is a Kubernetes operator that cleans up OpenStack resources left behind by OCCM and the Cinder CSI when Cluster API clusters are deleted.
+This repository is the Go replacement for the Python [`cluster-api-janitor-openstack`](https://github.com/azimuth-cloud/cluster-api-janitor-openstack) controller.
+The compatibility baseline is Python `0.15.0` at `f14d860`.
+The replacement keeps its finalizer and deletion scope and fixes confirmed failure behavior.
+The replacement release covers CAPO `OpenStackCluster` `v1beta1`, a directly referenced Secret, explicit `v3applicationcredential` authentication, and the resource types cleaned by Python.
 
-The rewrite follows TDD: Gherkin tests are written first, then the implementations.
+The rewrite follows TDD: the user stories below describe observable outcomes, and the implementation must provide named tests for them.
 
 Scaffolding tool: **kubebuilder**.
+
+Detailed decisions, selectors, observable outcomes, and regression evidence are recorded in the [compatibility policy](docs/design/python-compatibility-policy.md), [ownership matrix](docs/design/resource-ownership-matrix.md), [behavior matrix](docs/design/cleanup-behaviour-matrix.md), and [regression ledger](docs/design/python-regression-ledger.md).
+A settled story is a target contract, not a claim that the active runtime implements it.
+The user choices remain the existing volume policy and explicit deletion of the direct application credential and Secret.
 
 ---
 
@@ -55,7 +62,7 @@ Scaffolding tool: **kubebuilder**.
 | File | What is tested |
 |---|---|
 | `test_openstack.py` | Successful auth, 404, missing interface, missing region, multiple services |
-| `test_operator.py` | FIP/LB/SG/volume/snapshot filtering; `empty()`; `try_delete()`; event handler (add finalizer, skip, purge); auth error in purge |
+| `test_operator.py` | FIP, LB, SG, volume, and snapshot filtering, plus `empty()`, `try_delete()`, event handling, and purge authentication errors |
 
 **Notable gap**: `test_purge_openstack_resources_success` is commented out (mock complexity).
 
@@ -69,7 +76,7 @@ Scaffolding tool: **kubebuilder**.
 
 | PR | Title | Impact |
 |---|---|---|
-| #261 | Fix leaving Azimuth cluster loadbalancers behind | Adds detection of Azimuth LBs (`kube_service_<cluster>_` + LBs named differently by Azimuth) |
+| #261 | Fix leaving Azimuth cluster loadbalancers behind | Remove the CAPO status gate. Keep the exact workload selector and block on incomplete inventory |
 
 ---
 
@@ -101,7 +108,7 @@ Feature: OpenStack Authentication via Application Credential
     And the original call is replayed with the new token
 
   Scenario: Authentication with unsupported type
-    Given a clouds.yaml with auth_type "password"
+    Given a clouds.yaml with token, federation, or another unsupported auth_type
     When the operator attempts to create a Cloud client
     Then an UnsupportedAuthenticationError is raised
 
@@ -138,7 +145,7 @@ Feature: OpenStack Service Catalog
     When the catalog is loaded
     Then the "public" interface is used by default
 
-  Scenario: Catalog request fails with a non-404 error
+  Scenario: Catalog request fails with an error other than 404
     Given the catalog endpoint returns HTTP 500
     When the operator loads the catalog
     Then an error is returned
@@ -147,25 +154,26 @@ Feature: OpenStack Service Catalog
     Given the catalog endpoint returns a malformed JSON body
     When the operator loads the catalog
     Then an error is returned
+
 ```
+
+Region precedence and unusable selected endpoints are covered by the [identity and client behavior matrix](docs/design/cleanup-behaviour-matrix.md#identity-and-openstack-client-behaviour).
 
 #### US1.3 — Revoked or Invalid Credential Handling
 
 ```gherkin
 Feature: Invalid OpenStack Credential
-  Scenario: Application credential deleted before purge
-    Given an OpenStack cluster being deleted
-    And the application credential has already been deleted
-    When the operator attempts to authenticate
-    Then is_authenticated returns false
-    And if include_appcred is true, a warning is emitted and the purge stops cleanly
-    And if include_appcred is false, an AuthenticationError is raised
+  Scenario: Authentication fails before resource verification
+    Given the referenced credential cannot authenticate
+    When cleanup starts
+    Then cleanup is blocked
+    And the credential Secret and finalizer remain
 
-  Scenario: Catalog returns 404
-    Given a valid Keystone URL but the catalog returns 404
-    When the operator loads the catalog
-    Then is_authenticated returns false
-    And no fatal error is raised
+  Scenario: Authentication failure does not prove credential deletion
+    Given authentication, catalog, or the Keystone base URL returns 401 or 404
+    When no exact DELETE result for the bound application credential is known
+    Then cleanup remains blocked
+    And US7.3 controls recovery after the checkpoint is recorded
 ```
 
 #### US1.4 — Custom CA Certificate Support
@@ -189,55 +197,24 @@ Feature: Custom CA Certificate
     Then an error is returned
 ```
 
-#### US1.5 — Authentication via Username/Password (v3password)
+#### US1.5 — Direct Secret Identity Resolution
 
 ```gherkin
-Feature: OpenStack Authentication via Username/Password
-  In order to support clouds that do not use application credentials
-  As an operator
-  I want to authenticate using a v3password auth block with the correct Keystone scope
+Feature: CAPO Identity Reference Resolution
+  Scenario: Direct Secret in the replacement release
+    Given identityRef.type is "Secret" or the admitted legacy empty value
+    When the identity is resolved
+    Then the Secret named by identityRef.name is read from the same namespace
+    And Secret.Data bytes are parsed without another base64 decode
 
-  Scenario: Project-scoped request with a project ID
-    Given a clouds.yaml auth block with "project_id" set
-    When the token request body is built
-    Then the request is scoped to that project by ID
-
-  Scenario: Project-scoped request with a project name and explicit project domain
-    Given a clouds.yaml auth block with "project_name" and "project_domain_id" (or "project_domain_name") set
-    When the token request body is built
-    Then the request is scoped to that project by name, with the given domain
-
-  Scenario: Project-scoped request falls back to the user domain
-    Given a clouds.yaml auth block with "project_name" set but no project domain
-    And "user_domain_id" or "user_domain_name" is set
-    When the token request body is built
-    Then the project scope's domain falls back to the user domain
-
-  Scenario: Project name with no domain information at all
-    Given a clouds.yaml auth block with only "project_name" set
-    When the token request body is built
-    Then the project scope omits the domain key entirely
-
-  Scenario: Domain-scoped request
-    Given a clouds.yaml auth block with "domain_id" or "domain_name" set and no project
-    When the token request body is built
-    Then the request is scoped to that domain
-
-  Scenario: No scoping information at all
-    Given a clouds.yaml auth block with no project or domain fields
-    When the token request body is built
-    Then no "scope" key is included in the request
-
-  Scenario: User identified by user_id
-    Given a clouds.yaml auth block with "user_id" set
-    When the token request body is built
-    Then the user is identified by ID, and the "name"/domain fields are omitted
-
-  Scenario: Username without any user domain
-    Given a clouds.yaml auth block with "username" set and no user domain fields
-    When the token request body is built
-    Then the user block omits the domain key entirely
+  Scenario: Unsupported identity type
+    Given identityRef.type is neither "Secret" nor the admitted legacy empty value
+    When reconciliation starts
+    Then no Secret fallback by name occurs
+    And cleanup is blocked before any OpenStack request
 ```
+
+Other identity sources are outside the replacement release.
 
 ---
 
@@ -262,7 +239,17 @@ Feature: Identifying Floating IPs of a Cluster
     Given a FIP with description "Some other description"
     When the FIPs of cluster "mycluster" are listed
     Then this FIP is excluded from the result
+
+  Scenario: FIP with a wider or partial prefix
+    Given a FIP with description "Floating IP for Kubernetes worker from cluster mycluster"
+    When the FIPs of cluster "mycluster" are listed
+    Then this FIP is excluded from the result
 ```
+
+Upstream OCCM uses `kubernetes` when its cluster name is not configured.
+Azimuth configures OCCM with the effective workload cluster name instead.
+Replacement validation must confirm that OCCM, Cinder CSI, and the Janitor use the same value and that workload cluster names are unique within the OpenStack project.
+The Janitor keeps exact matching and does not try `kubernetes` or another fallback name.
 
 #### US2.2 — Delete Floating IPs
 
@@ -279,23 +266,18 @@ Feature: Floating IP Deletion
     When the purge attempts to delete the FIP
     Then a warning is emitted
     And deletion continues for other FIPs
-    And check_fips is true to trigger a verification
+    And the phase returns a waiting outcome for later verification
 
   Scenario: HTTP 500 error during deletion
     Given a FIP deletion returns HTTP 500
     When the purge attempts to delete the FIP
     Then an exception is propagated
 
-  Scenario: FIP deletion confirmed via polling
-    Given a FIP still appears in a first verification listing (OpenStack PENDING_DELETE)
-    When the purge polls again shortly after
-    And the FIP has disappeared
-    Then no error is raised
-
-  Scenario: FIP still present after exhausting verification attempts
-    Given a FIP still appears in every verification listing
-    When the purge exhausts its polling attempts
-    Then an error is returned mentioning the cluster name
+  Scenario: FIP deletion remains pending
+    Given a selected FIP still appears after OpenStack accepts deletion
+    When the current cleanup iteration verifies the phase
+    Then the controller returns RequeueAfter
+    And no polling loop or sleep runs inside reconciliation
 
   Scenario: Floating IP already deleted
     Given a FIP deletion returns HTTP 404
@@ -303,22 +285,20 @@ Feature: Floating IP Deletion
     Then the deletion is treated as successful, not as an error
 ```
 
-> Deletion verification for FIPs, LBs, security groups, volumes and snapshots
-> (Epics 2 to 6) shares a common polling mechanism: verify immediately after
-> issuing the deletes, then retry a bounded number of times with a fixed
-> delay between attempts if the resource is still listed. This absorbs
-> OpenStack's eventual consistency (`PENDING_DELETE` states) without
-> incurring a wait when nothing needs one.
+> Deletion verification for FIPs, LBs, security groups, volumes, and snapshots is level based.
+> One bounded iteration observes or mutates one dependency phase.
+> Resources that remain are observed again through `RequeueAfter`.
+> The controller does not poll or sleep inside reconciliation.
 
 #### US2.3 — Defensive Pagination Parsing
 
 ```gherkin
 Feature: Paginated Listing Robustness
-  In order to avoid crashing on unexpected OpenStack API responses
+  In order to avoid authorizing deletion from incomplete inventory
   As an operator
-  I want paginated list requests to degrade gracefully on malformed data
+  I want incomplete or malformed list responses to block cleanup
 
-  Scenario: Malformed top-level JSON in a list page
+  Scenario: Malformed JSON at the top level of a list page
     Given an OpenStack list endpoint returns a body that is not valid JSON
     When the page is parsed
     Then an error is returned
@@ -331,17 +311,19 @@ Feature: Paginated Listing Robustness
   Scenario: Pagination links field malformed
     Given a "<resource>_links" field that is not an array of link objects
     When the next page URL is resolved
-    Then pagination stops after the current page (no error)
+    Then an error is returned
+    And no deletion is authorized from the partial inventory
 
   Scenario: No "next" relation present
     Given a "<resource>_links" array without a "next" entry
     When the next page URL is resolved
     Then pagination stops after the current page (no error)
+
 ```
 
-> `nextPageURL` and `listPages` are shared by FIPs, load balancers and
-> security groups; the scenarios above were validated against the FIP
-> listing endpoint but apply identically to the other two.
+> `nextPageURL` and `listPages` are shared by FIPs, load balancers, and security groups.
+> The scenarios above use the FIP listing endpoint but apply to the other two services.
+> A failure on a later page discards the inventory as defined by [error handling](docs/design/cleanup-behaviour-matrix.md#error-handling).
 
 ---
 
@@ -365,36 +347,28 @@ Feature: Identifying Kubernetes Load Balancers
     Given an LB with name "fake_service_mycluster_api"
     When the LBs of cluster "mycluster" are listed
     Then this LB is excluded from the result
+
 ```
 
 #### US3.2 — Identify Azimuth Load Balancers (PR #261)
 
 ```gherkin
-Feature: Identifying Azimuth Load Balancers
-  Scenario: Azimuth LB belonging to the cluster
-    Given an Azimuth LB identifiable as belonging to cluster "mycluster"
+Feature: Identifying OCCM Workload Load Balancers
+  Scenario: Cluster does not use a CAPO API server load balancer
+    Given spec.apiServerLoadBalancer.enabled is false
+    And an LB is named "kube_service_mycluster_default_web"
     When the LBs of cluster "mycluster" are listed
-    Then this Azimuth LB is included in the result
+    Then this workload LB is included in the result
 
-  Scenario: HTTP error during LB listing
-    Given the Octavia API returns an HTTP error during listing
+  Scenario: CAPO status ID is empty
+    Given status.apiServerLoadBalancer.id is empty
+    And an LB is named "kube_service_mycluster_default_web"
     When the LBs of cluster "mycluster" are listed
-    Then an ERROR log is emitted with the HTTP code
-    And no exception is propagated
-    And a warning indicates that LBs may remain
-
-  Scenario: HTTP error while verifying LB deletion after polling
-    Given LBs were deleted for cluster "mycluster"
-    And the Octavia API returns an HTTP error while verifying their deletion
-    When the verification polling exhausts its attempts due to the error
-    Then an ERROR log is emitted
-    And no exception is propagated
+    Then this workload LB is included in the result
 ```
 
-> Unlike the other resource types, LB verification failures stay non-fatal
-> (logged only) in both cases above — before and after the deletes are
-> issued — since Octavia listing is known to be slower/less reliable than
-> Neutron or Cinder (see PR #261).
+> The CAPO API server load balancer fields are not an ownership signal for OCCM workload load balancers.
+> US3.4 defines how incomplete inventory blocks cleanup.
 
 #### US3.3 — Delete Load Balancers with Cascade
 
@@ -406,6 +380,51 @@ Feature: Cascaded Load Balancer Deletion
     Then the LB is deleted with the cascade=true parameter
     And associated Octavia resources (listeners, pools, members) are deleted
 ```
+
+#### US3.4 — Protect Shared Load Balancers and Handle Octavia Gaps
+
+```gherkin
+Feature: Shared Load Balancer and Octavia Safety
+  Scenario: Several Services from the target cluster share an LB
+    Given an LB passes the Python name selector
+    And every reserved OCCM tag has the form kube_service_<cluster>_<namespace>_<service>
+    And every reserved tag belongs to the target cluster
+    When ownership is evaluated
+    Then the LB remains eligible for cascade deletion
+
+  Scenario: A reserved tag is foreign or malformed
+    Given an LB passes the Python name selector
+    And a kube_service_ tag belongs to another cluster or is malformed
+    When ownership is evaluated
+    Then the LB and its attached VIP floating IP are preserved
+    And unrelated owned resources may continue
+
+  Scenario: A complete tag result has no reserved OCCM tag
+    Given an LB passes the Python name selector
+    And its complete tag result contains no reserved kube_service_ tag
+    When ownership is evaluated
+    Then the legacy name selector remains eligible for cascade deletion
+
+  Scenario: Ownership facts are incomplete
+    Given an LB tag, VIP port ID, FIP port ID, or inventory page is unknown
+    When cleanup runs
+    Then no OpenStack mutation is made
+
+  Scenario: Octavia is missing or cannot provide complete inventory
+    Given the load-balancer service or selected endpoint is missing
+    Or an inventory, pagination, tag, VIP port, or FIP association fact is incomplete
+    When the Octavia phase is evaluated
+    Then cleanup is blocked and the finalizer remains
+
+  Scenario: Complete inventory has no matching LB
+    Given Octavia returns every inventory page successfully
+    And no load balancer matches the Python name selector
+    When the Octavia phase is evaluated
+    Then no load balancer deletion is requested
+    And the phase completes normally
+```
+
+The complete tag and floating IP checks are defined in the [shared load balancer ownership rules](docs/design/resource-ownership-matrix.md#shared-load-balancer-floating-ip).
 
 ---
 
@@ -439,7 +458,8 @@ Feature: Security Group Deletion
     Given an SG deletion returns HTTP 409
     When the purge attempts to delete the SG
     Then a warning is emitted
-    And check_secgroups is true for a later verification
+    And the phase returns a waiting outcome for later verification
+    And no polling occurs inside reconciliation
 ```
 
 ---
@@ -504,7 +524,7 @@ Feature: Volume Deletion Policy
 
 ```gherkin
 Feature: Cinder Response Robustness
-  Scenario: Top-level volume/snapshot list response is not valid JSON
+  Scenario: Volume or snapshot list response has invalid JSON at the top level
     Given the Cinder API returns a malformed JSON body for a list request
     When the volumes or snapshots of a cluster are listed
     Then an error is returned
@@ -551,9 +571,10 @@ Feature: Application Credential Deletion
   Scenario: Deletion authorised (last finalizer)
     Given the annotation "janitor.capi.stackhpc.com/credential-policy" = "delete" on the secret
     And the operator's finalizer is the only finalizer present
-    When the purge of OpenStack resources is complete
+    And a fresh complete inventory contains no owned resource
+    When the credential transition reaches its exact delete phase
     Then the Application Credential is deleted via the Identity API
-    And the Kubernetes secret containing clouds.yaml is deleted
+    And only a confirmed deleted or absent result can authorize Secret deletion
 
   Scenario: Other finalizers still present
     Given the annotation "credential-policy" = "delete" on the secret
@@ -561,13 +582,14 @@ Feature: Application Credential Deletion
     When the purge is complete
     Then the credential secret is not deleted
     And the janitor finalizer is not removed
-    And a retry annotation is set to trigger a later reconcile
+    And RequeueAfter requests a later reconcile
 
   Scenario: Application Credential cannot be deleted (403)
     Given the Application Credential is restricted (no unrestricted flag)
     When the appcred deletion is attempted
-    Then a warning is emitted
-    And the Kubernetes secret deletion proceeds anyway
+    Then the checkpoint remains at credentialDeleteStarted
+    And the Kubernetes Secret and finalizer remain
+    And cleanup is reported as blocked
 
   Scenario: clouds.yaml cannot be parsed while resolving the credential ID
     Given a malformed clouds.yaml
@@ -575,13 +597,15 @@ Feature: Application Credential Deletion
     Then an error is returned
 ```
 
+Exact responses, credential resolution from the selected cloud, and authentication failures after deletion starts are defined in the [credential cleanup matrix](docs/design/cleanup-behaviour-matrix.md#application-credential-and-secret-cleanup).
+
 #### US7.2 — Purge Orchestration Across Resource Types
 
 ```gherkin
 Feature: OpenStack Resource Purge Orchestration
   In order to guarantee a consistent, predictable cleanup sequence
   As an operator
-  I want resource types to be purged in a fixed order, stopping on the first failure
+  I want bounded cleanup phases in a fixed dependency order
 
   Scenario: Authentication fails
     Given an invalid clouds.yaml
@@ -605,16 +629,59 @@ Feature: OpenStack Resource Purge Orchestration
     When the purge is triggered
     Then snapshots and volumes are not listed or deleted
 
-  Scenario: Application credential deletion requested
-    Given include_appcred is true and all prior steps succeed
-    When the purge is triggered
-    Then the application credential is deleted via the Identity API
-
-  Scenario: Full successful purge
-    Given include_volumes and include_appcred set as configured, and no step fails
-    When the purge is triggered
-    Then all resource types are processed in order and no error is returned
+  Scenario: One dependency phase per iteration
+    Given multiple resource kinds remain
+    When the cleanup runner executes once
+    Then it processes only the earliest required dependency phase
+    And later phases wait for a future reconcile
 ```
+
+> The [cleanup progression](docs/design/go-rewrite-guidelines.md#cleanup-progression) defines preflight, dependency order, optional clients, and the typed runner cutover gate.
+
+#### US7.3 — Credential and Secret Cleanup Across Restarts
+
+```gherkin
+Feature: Persisted Credential Cleanup State
+  Scenario: Credential deletion is ready to start
+    Given the Janitor is the only finalizer
+    And fresh complete inventory contains no owned resource
+    And direct application credential deletion is enabled
+    When reconciliation reaches the credential phase
+    Then it records credentialDeleteStarted for the exact credential
+    And it returns before making the credential DELETE request
+
+  Scenario: Credential deletion is confirmed
+    Given credentialDeleteStarted records the exact credential
+    When deleting that credential returns 204 or an exact 404
+    Then reconciliation records secretDeleteStarted
+    And it returns before deleting the Secret
+
+  Scenario: Credential deletion is not confirmed
+    Given credentialDeleteStarted records the exact credential
+    When deletion returns 401, 403, a timeout, or another unconfirmed result
+    Then the Secret and finalizer remain
+    And cleanup is reported as blocked
+
+  Scenario: Secret deletion completes
+    Given secretDeleteStarted records the exact Secret UID
+    When reconciliation resumes
+    Then it deletes only that Secret UID
+    And it removes the Janitor finalizer after the Secret is absent
+
+  Scenario: State cannot be replayed safely
+    Given the checkpoint is malformed, crosses an ownership boundary, or changed after credentialDeleteStarted
+    When reconciliation resumes
+    Then cleanup remains blocked for manual recovery
+
+  Scenario: The manager stops during the transition
+    Given the manager stops after a checkpoint patch or external request
+    When the same object reconciles after restart
+    Then the recorded phase resumes
+    And the Secret and finalizer are not removed early
+```
+
+US7.1 lists the external outcomes.
+The [compatibility policy](docs/design/python-compatibility-policy.md#application-credential-cleanup) defines the checkpoint binding and transition sequence.
 
 ---
 
@@ -628,7 +695,7 @@ Feature: Adding the Janitor Finalizer to OpenStackCluster
     Given an OpenStackCluster without deletionTimestamp
     And without finalizer "janitor.capi.stackhpc.com"
     When an event is received for this cluster
-    Then the finalizer "janitor.capi.stackhpc.com" is added via patch
+    Then the finalizer "janitor.capi.stackhpc.com" is added with a metadata patch that preserves concurrent changes
     And an INFO log confirms the addition
 
   Scenario: Cluster with finalizer already present
@@ -653,6 +720,14 @@ Feature: Cluster Name Resolution
     And metadata.name = "mycluster"
     When the operator resolves the cluster name
     Then the name "mycluster" is used
+
+  Scenario: Replacement environment uses one cluster name
+    Given the Janitor resolves the workload cluster name as "mycluster"
+    And OCCM and Cinder CSI are configured for that workload cluster
+    When replacement validation runs
+    Then OCCM and Cinder CSI use "mycluster"
+    And no other workload cluster in the OpenStack project uses that name
+
 ```
 
 #### US8.3 — Remove the Finalizer after Successful Cleanup
@@ -662,8 +737,9 @@ Feature: Finalizer Removal after Purge
   Scenario: Successful purge
     Given an OpenStackCluster being deleted
     And all OpenStack resources have been deleted
+    And every required credential and Secret phase is complete
     When the purge completes without error
-    Then the finalizer "janitor.capi.stackhpc.com" is removed via patch
+    Then the finalizer "janitor.capi.stackhpc.com" is removed with a metadata patch that preserves concurrent changes
     And an INFO log confirms the finalizer removal
 
   Scenario: Finalizer absent at removal time
@@ -674,27 +750,26 @@ Feature: Finalizer Removal after Purge
     And an INFO log indicates the finalizer is absent
 ```
 
-#### US8.4 — Retry Mechanism via Annotation
+#### US8.4 — Retry Mechanism
 
 ```gherkin
-Feature: Retry via Random Annotation
-  Scenario: Transient error during purge
-    Given a purge that fails with a ResourcesStillPresentError
-    When the operator handles the error
-    Then after a backoff delay (5s for ResourcesStillPresent)
-    And a random annotation "janitor.capi.stackhpc.com/retry" is set on the OpenStackCluster
-    And a new event is triggered to replay the purge
+Feature: Bounded Reconciliation Retry
+  Scenario: Expected OpenStack wait
+    Given deletion is accepted but the selected resource remains
+    When the cleanup outcome is Waiting
+    Then Reconcile returns RequeueAfter, normally five seconds
+    And no sleep or retry annotation is used
 
-  Scenario: Unknown error during purge
-    Given a purge that fails with an unclassified exception
-    When the operator handles the error
-    Then the delay is CAPI_JANITOR_RETRY_DEFAULT_DELAY (default 60s)
-    And the exception is logged with a stack trace
+  Scenario: Operational cleanup error
+    Given cleanup returns an operational error
+    When Reconcile returns the error
+    Then workqueue backoff for that object starts at one second
+    And it is capped by CAPI_JANITOR_RETRY_DEFAULT_DELAY, default 60 seconds
 
-  Scenario: Resource deleted between the error and the retry
-    Given the OpenStackCluster is deleted during backoff
-    When the operator attempts to annotate the resource
-    Then the 404 ApiError is ignored
+  Scenario: Reconciliation later succeeds
+    Given an object has accumulated error backoff
+    When reconciliation succeeds
+    Then that object's error backoff is reset
 ```
 
 #### US8.5 — Robust Reconcile Error Handling
@@ -705,37 +780,35 @@ Feature: Reconcile Resilience to Kubernetes API Errors
   As an operator
   I want Kubernetes API errors during reconciliation to be surfaced or handled explicitly
 
-  Scenario: Fetching the OpenStackCluster fails with a non-NotFound error
+  Scenario: Fetching the OpenStackCluster returns an error other than NotFound
     Given the Kubernetes API returns an error other than NotFound when fetching the cluster
     When Reconcile runs
     Then the error is propagated
 
   Scenario: Adding the finalizer fails
-    Given the update to the OpenStackCluster fails
+    Given the metadata patch to the OpenStackCluster fails
     When Reconcile attempts to add the janitor finalizer
     Then the error is propagated, wrapped as "adding finalizer"
 
-  Scenario: Fetching the identity secret fails with a non-NotFound error
+  Scenario: Fetching the identity Secret returns an error other than NotFound
     Given the Kubernetes API returns an error other than NotFound when fetching the credential secret
     When Reconcile runs during deletion
     Then the error is propagated, wrapped as "fetching identity secret"
 
   Scenario: Identity secret does not exist
     Given the secret referenced by spec.identityRef does not exist
+    And secretDeleteStarted has not been recorded
     When Reconcile runs during deletion
-    Then Reconcile returns without error and does not attempt a purge
+    Then cleanup is reported as blocked
+    And the finalizer remains
+    And a Secret watch or requeue can recover when the Secret is restored
 
   Scenario: CloudName not specified
     Given spec.identityRef.cloudName is empty
     When Reconcile runs during deletion
-    Then the cloud name "openstack" is used to authenticate
+    Then the cloud name "openstack" is used only for an object admitted before cloudName became required
 
-  Scenario: Retry annotation patch fails with a non-NotFound error
-    Given a purge failure followed by a failure to patch the retry annotation
-    When Reconcile handles the purge error
-    Then the error is propagated
-
-  Scenario: Deleting the credential secret fails with a non-NotFound error
+  Scenario: Deleting the credential Secret returns an error other than NotFound
     Given credential-policy is "delete", this is the last finalizer, and the secret deletion fails
     When Reconcile completes a successful purge
     Then the error is propagated, wrapped as "deleting credential secret"
@@ -745,11 +818,29 @@ Feature: Reconcile Resilience to Kubernetes API Errors
     When Reconcile attempts to remove the janitor finalizer
     Then the error is propagated, wrapped as "removing finalizer"
 
-  Scenario: No PurgeFunc configured
-    Given the reconciler has no injected PurgeFunc
-    When Reconcile triggers a purge
-    Then the real openstack.PurgeResources implementation is used
+  Scenario: Concurrent metadata changes
+    Given another controller changes labels, annotations, or finalizers
+    When the Janitor patches its own metadata
+    Then unrelated changes are preserved
+    And a conflict is retried from a fresh object
 ```
+
+#### US8.6 — Pause and Controller Wiring
+
+```gherkin
+Feature: Controller Runtime Safeguards
+  Scenario: Reconciliation is paused
+    Given the CAPI Cluster or OpenStackCluster is paused
+    When reconciliation runs
+    Then no OpenStack request is made and the finalizer remains
+
+  Scenario: A referenced object changes
+    Given the identity Secret or owning Cluster changes
+    When the secondary watch maps the event
+    Then the related OpenStackCluster is reconciled
+```
+
+Indexes, watches, RBAC, leader election, and envtest evidence are defined in the [lifecycle matrix](docs/design/cleanup-behaviour-matrix.md#lifecycle-and-kubernetes-behaviour).
 
 ---
 
@@ -766,8 +857,13 @@ Feature: Configuration via Environment Variables
 
   Scenario: Configurable retry delay
     Given CAPI_JANITOR_RETRY_DEFAULT_DELAY = "120"
-    When an unclassified error occurs
-    Then the retry delay is 120 seconds
+    When repeated operational errors occur
+    Then workqueue backoff for that object starts at one second and never exceeds 120 seconds
+
+  Scenario: Invalid retry delay
+    Given CAPI_JANITOR_RETRY_DEFAULT_DELAY is malformed, zero, negative, or overflows
+    When the manager starts
+    Then startup fails with a configuration error
 ```
 
 ---
@@ -780,14 +876,15 @@ Feature: Configuration via Environment Variables
 Feature: Secure OCI Image for the Go Operator
   Scenario: Reproducible Nix build
     Given the Go operator source code
+    And nixpkgs is pinned to an immutable revision and hash
     When `nix-build nix -A image` is run
     Then the manager binary is built with buildGoModule and CGO_ENABLED=0
     And the image contains only the Nix closure required to run the binary
 
   Scenario: Image security
     Given the built image
-    Then the process runs as non-root (UID 65532)
-    And the root filesystem is read-only
+    Then the process runs as UID 65532 rather than root
+    And the root filesystem cannot be written to
     And all Linux capabilities are dropped
 ```
 
@@ -814,8 +911,14 @@ Feature: Deployment via Helm Chart
 
   Scenario: Complete RBAC
     Given the deployed ClusterRole
-    Then the "update" verb is present on openstackclusters
-    (required for r.Update during finalizer management)
+    Then OpenStackCluster metadata can be patched
+    And referenced Secrets and CAPI Clusters can be listed and watched
+    And Events can be created and patched
+
+  Scenario: Single active reconciler
+    Given the chart is installed with more than one replica
+    Then leader election is enabled
+
 ```
 
 #### US10.3 — OCI Build via Nix (without Flake) and SBOM
@@ -828,19 +931,68 @@ Feature: Reproducible OCI Build via Nix and SBOM Generation
     Then an amd64 OCI image is produced (dockerTools.buildLayeredImage)
     And the image runs as User 65532:65532
 
-  Scenario: Build the arm64 image by cross-compilation
+  Scenario: Build the arm64 image by cross compilation
     Given the nix/default.nix file
     When nix-build nix -A image-arm64 is executed
     Then an arm64 OCI image is produced via pkgsCross.aarch64-multiplatform
-    And both images are combined into a multi-arch manifest via skopeo + docker manifest
+    And both images are combined into one manifest for both architectures via skopeo and docker manifest
 
   Scenario: CycloneDX SBOM generation
     Given the compiled Go binary
     When nix-build nix -A sbom is executed
     Then an sbom.cdx.json file in CycloneDX format is produced
     And it lists all Go modules (extracted from the buildinfo embedded in the binary)
-    And it is uploaded as an artefact of the GitHub Actions workflow
+    And it is retained as a release artifact with the source revision
 ```
+
+#### US10.4 — Release Artifacts and Publication Safety
+
+```gherkin
+Feature: Verified Replacement Release
+  Scenario: Pull request and release candidate validation
+    Given source, dependency, packaging, or release configuration changes
+    When CI builds without publishing
+    Then GoReleaser, Nix, Helm, Kustomize, SBOM, checksum, and version checks pass
+
+  Scenario: A tag is published
+    Given the exact candidate commit passed all release gates
+    When publication runs
+    Then public artifacts are traceable to that commit
+    And a published tag or asset cannot be replaced by a rerun
+```
+
+Artifact responsibilities are documented in [Releasing and versioning](docs/releasing.md#what-builds-each-artifact).
+Upgrade the CAPO dependency from `v0.14.6` to `v0.14.7` before collecting release evidence.
+This version is the first validation fixture, not a permanent compatibility boundary.
+
+#### US10.5 — Migration, Recovery, and Representative Validation
+
+```gherkin
+Feature: Python to Go Replacement Validation
+  Scenario: Controller deployment changes
+    Given Python and Go never manage the same object concurrently
+    And the Python controller is stopped before the Go controller starts
+    When an eligible object moves to Go
+    Then the legacy finalizer is recognized and cleanup converges
+
+  Scenario: Standard deployment rollback
+    Given no managed object is actively deleting
+    When the deployment rolls back to Python
+    Then the Python controller can resume from the existing finalizer
+
+  Scenario: A deleting object needs recovery
+    Given a managed object is actively deleting
+    When recovery begins
+    Then the Go controller remains responsible for that object
+    And an unverified checkpoint requires manual recovery
+
+  Scenario: Real OpenStack exercises the ownership boundary
+    Given owned fixtures and similar fixtures that must not match share a test project
+    When cleanup runs
+    Then owned resources are deleted and protected fixtures remain
+```
+
+Required evidence is listed in the [replacement acceptance criteria](docs/design/go-rewrite-guidelines.md#acceptance-criteria-for-the-replacement-release).
 
 ---
 
@@ -861,8 +1013,8 @@ Feature: Prometheus Metrics
     Then capi_janitor_cleanups_total{result="failure"} is incremented by 1
 ```
 
-> Implemented: `CounterVec` exposed via `ctrlmetrics.Registry` (port 8080/metrics).
-> `Metrics *Metrics` field is injectable on the reconciler (DI for tests).
+> Partially implemented: `CounterVec` is registered through `ctrlmetrics.Registry`, and `Metrics *Metrics` is injectable on the reconciler for tests.
+> Metric exposure in packaged deployments and evidence for blocked outcomes remain open.
 
 #### US11.2 — Kubernetes Events
 
@@ -879,8 +1031,8 @@ Feature: Kubernetes Events on OpenStackCluster
     Then a Warning event with reason "CleanupFailed" and the error message is emitted
 ```
 
-> Implemented: `record.EventRecorder` injectable on the reconciler; `SetupWithManager`
-> auto-initialises via `mgr.GetEventRecorderFor("capi-janitor")` when nil.
+> Implemented: `record.EventRecorder` is injectable on the reconciler and initialized from the manager when nil.
+> Blocked and preserved outcomes require a specific Warning reason.
 
 ---
 
@@ -890,16 +1042,19 @@ Feature: Kubernetes Events on OpenStackCluster
 
 ```gherkin
 Feature: HTTP Timeout on the OpenStack Client
-  Scenario: Context cancelled before the call
-    Given an already-cancelled context
+  Scenario: Context canceled before the call
+    Given a context that is already canceled
     When Authenticate is called
     Then an error is returned immediately
 
   Scenario: Safety net on the http.Client
     Given no context with a deadline provided by the caller
-    Then the http.Client has a Timeout of 30 seconds
+    Then the http.Client has a Timeout of 60 seconds
     (prevents calls from blocking indefinitely when OpenStack is unreachable)
+
 ```
+
+Keystone path prefix coverage is tracked in the [regression ledger](docs/design/python-regression-ledger.md).
 
 #### US12.2 — Cinder Service Legacy Aliases
 
@@ -915,13 +1070,8 @@ Feature: Cinder Service Detection with Aliases
     When the operator looks up the Cinder client
     Then the "block-storage" client is used
 
-  Scenario: Catalog with "volume" only (legacy alias < Stein)
-    Given an OpenStack catalog without "volumev3" or "block-storage" but with "volume"
-    When the operator looks up the Cinder client
-    Then the "volume" client is used
-
   Scenario: Catalog without a Cinder service
-    Given a catalog without "volumev3", "block-storage", or "volume"
+    Given a catalog without "volumev3" or "block-storage"
     When the operator looks up the Cinder client
     Then a CatalogError is raised with the appropriate message
 ```
@@ -930,10 +1080,27 @@ Feature: Cinder Service Detection with Aliases
 
 ```gherkin
 Feature: Distinguishing Transient from Fatal Deletion Errors
-  Scenario: Non-HTTP error is never treated as transient
-    Given a deletion attempt fails with an error that is not an HTTP status error (e.g. a network-level failure)
+  Scenario: HTTP 400 or 409 represents a pending delete
+    Given deletion of a resource already selected returns HTTP 400 or 409
+    When the operator classifies the response
+    Then the phase waits and verifies the selected resource again later
+
+  Scenario: Exact DELETE of a selected resource returns 404
+    Given a resource passed its ownership selector
+    And its exact DELETE returns HTTP 404
+    When the operator classifies the response
+    Then the delete is idempotently complete
+
+  Scenario: Inventory, endpoint, or base URL returns 404
+    Given a 404 is not the exact DELETE result for a resource already selected
+    When the operator classifies the response
+    Then cleanup remains blocked
+
+  Scenario: Operational or transport failure
+    Given a request fails through DNS, TLS, timeout, network, 429, or 5xx
     When the operator classifies the error
-    Then it is not treated as transient (only HTTP 400/409 are)
+    Then the error is returned for workqueue retry
+    And the finalizer remains
 ```
 
 #### US12.4 — HTTP Response Body Read Failures
@@ -942,7 +1109,7 @@ Feature: Distinguishing Transient from Fatal Deletion Errors
 Feature: Robustness to Interrupted HTTP Responses
   Scenario: Response body cannot be fully read
     Given an OpenStack API call returns a successful status code
-    And the response body fails while being read (e.g. connection interrupted mid-transfer)
+    And the response body fails while being read, for example when the connection is interrupted during transfer
     When the operator processes the response
     Then an error is returned
 ```
@@ -951,68 +1118,73 @@ Feature: Robustness to Interrupted HTTP Responses
 
 ## Actions
 
-1. [x] Audit the existing code
-2. [x] Write the agile roadmap (this document)
+### Initial Go Rewrite (Historical Record)
+
+This checked list records the initial implementation pass, not replacement readiness.
+
+1. [x] Audit the existing Python code
+2. [x] Write the original Epic and User Story roadmap
 3. [x] Scaffold the Go project with kubebuilder
-4. [x] Write Go tests (TDD) for each user story
-5. [x] Implement the features in Go (108 tests)
+4. [x] Write the initial Go unit tests
+5. [x] Implement the initial manual HTTP cleanup path
 6. [x] Migrate the Helm chart for the Go image
-7. [x] Implement epics 11 (observability) and 12 (robustness)
-8. [x] OCI build via Nix (without Flake) + CycloneDX SBOM (US10.3 — outside initial plan)
-9. [x] Raise `internal/` test coverage from 77.5% to 93.0% (53 new tests — see Test Coverage below)
+7. [x] Add the first metrics and Kubernetes Events
+8. [x] Add the Nix OCI build and CycloneDX SBOM target
+9. [x] Raise coverage for the original implementation across four packages
+
+### Replacement Release Work
+
+1. [x] Settle the Python `0.15.0` compatibility policy, ownership matrix, behavior matrix, and regression ledger
+2. [ ] Build and connect the typed Gophercloud resource runner after US2.1–US7.2 and US12.1–US12.4 pass
+3. [ ] Make reconciliation bounded and driven by observed state, with patches that preserve concurrent changes, secondary watches, pause handling, and leader election under US8.1–US9.1
+4. [ ] Add failure scenarios for US7.3, connect the Keystone transition, cut production over, and remove the legacy manual HTTP resource path
+5. [ ] Pass envtest, Kind, real OpenStack ownership, migration, and recovery scenarios in US8.6 and US10.5
+6. [ ] Close release publication, Helm/Kustomize parity, immutable input, provenance, RC, and soak work in US10.1–US10.4
+7. [ ] Map every regression ledger row to a named Go test or tracked issue before the replacement release
 
 ## Final Result
 
-| Layer | Key Files |
+An initial Go implementation exists, but it does not yet meet the safe replacement release criteria.
+This snapshot was reviewed at `main@02e3491` on 20 August 2026.
+
+| Layer | Current state |
 |---|---|
-| OpenStack client | `internal/openstack/cloud.go`, `resources.go`, `purge.go` |
-| Controller | `internal/controller/openstackcluster_controller.go`, `metrics.go` |
-| Config | `internal/controller/config.go` (env vars) |
-| Tests | 168 tests (4 packages) |
-| Packaging | `nix/default.nix`, `nix/nixpkgs.nix` |
-| Helm | `chart/` — Deployment, ClusterRole, RBAC, health probes |
-| CI | `.github/workflows/build-push-artifacts.yaml` (Nix + skopeo + SBOM) |
+| OpenStack client | Gophercloud authentication and typed Neutron, Octavia, Cinder, and Keystone adapters exist. Target validation remains incomplete |
+| Active cleanup path | `purge.go` still calls legacy `Session` methods and manual HTTP models |
+| Controller | Core scaffolding exists. Reconciliation driven by observed state, watches, safe patches, and the checkpoint remain |
+| Packaging | Nix, SBOM, Helm, Kustomize, and GoReleaser exist. Checks across artifacts remain |
+| Full workflow evidence | Kind has an image reference gap. Real ownership and migration tests remain |
+| Replacement readiness | Not ready. Open work is tracked in Actions and the [acceptance criteria](docs/design/go-rewrite-guidelines.md#acceptance-criteria-for-the-replacement-release) |
 
 ### Test Coverage (`internal/`)
 
-| Metric | Before | After |
-|---|---|---|
-| Coverage (statements) | 77.5% | 93.0% |
-| Tests | 115 | 168 |
+| Snapshot | Packages | Top level tests | Aggregate statement coverage |
+|---|---:|---:|---:|
+| Initial rewrite review | 4 | 168 | 93.0% |
+| `main@02e3491` review | 9 | 181 | 84.4% |
 
-New tests added (53), targeting the functions that were at 0% or had untested
-error branches:
-
-| Function(s) | Coverage before → after | File |
-|---|---|---|
-| `PurgeResources` | 0% → 82.6% | `internal/openstack/purge_test.go` (new) — 8 tests via a combined self-referential mock server (network/load-balancer/volumev3/identity) |
-| `Reconcile` | 69% → 98.3% | `internal/controller/openstackcluster_controller_test.go` — 11 tests: Get/Update/Patch/Delete error injection via `interceptor.Funcs`, credential-policy branches (last finalizer vs. others still present), cloud name default, nil-`PurgeFunc` fallback |
-| `otherFinalizer` | 0% → 100% | `internal/controller/internal_test.go` (new, white-box) |
-| `deleteSecret`, `getSecret` | 0% / 50% → 100% | covered indirectly through the `Reconcile` tests above |
-| `httpStatusError.Error/StatusCode`, `isTransient`, `AppCredentialID`, `passwordScope`, `passwordTokenBody`, `loadCACert` | various → 100% | `internal/openstack/cloud_test.go` |
-| `doDelete` (404 path), `nextPageURL` (pagination edge cases), `listVolumeItems` (malformed JSON) | various → 100% or near | `internal/openstack/resources_test.go` |
-| `isTransient` (non-HTTP error), `doGet` (body-read error) | → 100% / 81.8% | `internal/openstack/internal_test.go` (new, white-box) |
-
-Residual gaps accepted as out of scope (negligible risk vs. setup/runtime cost):
-`SetupWithManager` (pure `ctrl.Manager` wiring), the real `time.Sleep`
-fallbacks in `Session.sleep` / `OpenStackClusterReconciler.sleep`, the
-`x509.SystemCertPool()` OS-level error path in `loadCACert`, and the
-malformed-URL branch of `newDeleteRequest`.
-
-The corresponding use cases were written up as Gherkin scenarios and folded
-into the relevant epics above: US1.2 (catalog defaults/errors), US1.4 (CA
-cert), new US1.5 (password auth & scope), US2.2/new US2.3 (FIP 404 handling,
-pagination robustness), new US5.3 (Cinder response robustness), US7.1/new
-US7.2 (appcred edge cases, purge orchestration), new US8.5 (Reconcile error
-handling), new US12.3/US12.4 (transient error classification, body-read
-failures).
+`go test ./...` and `go vet ./...` pass.
+The snapshots are not directly comparable because the later tree contains more packages and typed adapters.
+Neither percentage is a release gate.
+Required evidence is tied to the User Stories and regression ledger.
 
 ## Implementation Order
 
+```text
+Typed replacement data plane (required stories in Epics 1–7 and 12)
+  → bounded controller (Epic 8, US9.1)
+  → checkpoint and production cutover (US7.3)
+  → boundary, migration, and recovery evidence (US8.6, US10.5)
+  → release acceptance (Epic 10, Epic 11)
 ```
-Epic 1 (Auth) → Epic 2 (FIPs) → Epic 3 (LBs + PR #261)
-→ Epic 4 (SGs) → Epic 5 (Volumes) → Epic 6 (Snapshots)
-→ Epic 7 (AppCreds) → Epic 8 (Lifecycle K8s) → Epic 9 (Config)
-→ Epic 10 (Packaging + Nix/SBOM) → Epic 11 (Observability)
-→ Epic 12 (Robustness)
-```
+
+## Deferred Work
+
+The replacement adds no cleanup target or authentication method beyond application credentials.
+Label filtering, other identity sources, other API versions, and new settings remain deferred.
+Every extension follows [When the scope can grow](docs/design/go-rewrite-guidelines.md#when-the-scope-can-grow).
+
+## Definition of Replacement Complete
+
+The Python controller can be deprecated only after replacement work items 2–7 and the [acceptance criteria](docs/design/go-rewrite-guidelines.md#acceptance-criteria-for-the-replacement-release) are complete.
+Deferred work requires separate review and release evidence.

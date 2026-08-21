@@ -15,7 +15,8 @@ When those sources disagree, this document records the conflict and classifies t
 
 The Go replacement keeps the Python cleanup scope and policy.
 It does not copy framework-specific retry machinery or known unsafe failure behavior.
-The [resource ownership matrix](resource-ownership-matrix.md) defines the destructive boundary for these decisions.
+The [cleanup behavior matrix](cleanup-behaviour-matrix.md) records those deliberate corrections, and the [resource ownership matrix](resource-ownership-matrix.md) defines the destructive boundary.
+The [Python regression ledger](python-regression-ledger.md) maps earlier failures to evidence required from the replacement.
 
 ## Policy surface
 
@@ -133,7 +134,7 @@ This remains true for an application credential and even if the backing Secret c
 ## Deliberate Go corrections
 
 The replacement corrects unsafe Python failure handling without broadening a resource selector or adding a deletion target.
-Each correction remains within the destructive boundary defined by the [resource ownership matrix](resource-ownership-matrix.md).
+The [cleanup behavior matrix](cleanup-behaviour-matrix.md) lists every observable correction and required test, while the [regression ledger](python-regression-ledger.md) records its historical source.
 Typed Kubernetes Events and Prometheus metrics are observability extensions and do not change cleanup eligibility.
 
 ## Load balancer gate correction

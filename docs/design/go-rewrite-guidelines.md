@@ -12,7 +12,7 @@ It is not a broader OpenStack cleanup controller. The initial Go release will co
 Once the Go controller has been released, deployed, and shown to behave reliably, we can discuss additional cleanup responsibilities in separate design proposals.
 
 The Python baseline for this work is
-[`cluster-api-janitor-openstack`](https://github.com/azimuth-cloud/cluster-api-janitor-openstack/tree/44a89539cc902192cce46b93c7b05e20d127dc12).
+[`cluster-api-janitor-openstack` `0.15.0`](https://github.com/azimuth-cloud/cluster-api-janitor-openstack/tree/f14d86013d78ac3a4b07f5a2669a8f49590e13ca).
 The companion [cleanup behaviour matrix](cleanup-behaviour-matrix.md) and [resource ownership matrix](resource-ownership-matrix.md) record the details
 that need to be carried across.
 
@@ -41,8 +41,8 @@ For the first release, parity covers:
 
 - watching CAPO `OpenStackCluster` objects
 - adding and removing the existing Janitor finalizer
-- identifying the cluster name in the same way as the Python controller
-- removing the same OCCM `floating IP`s, `loadbalancer` when the existing gate allows it, `loadbalancer` security groups
+- identifying the cluster name in the same way as the Python controller, with unique workload cluster names in each OpenStack project
+- removing the same OCCM floating IPs, service load balancers, and service load balancer security groups
 - removing the same Cinder snapshots and volumes when volume policy is `delete`
 - keeping volumes marked with the existing keep property
 - attempting application credential and Secret cleanup under the existing policy
@@ -56,7 +56,7 @@ The following are not part of initial parity:
 - keypair cleanup
 - new naming conventions that the Python controller does not recognise
 - additional authentication methods
-- `ClusterIdentity` support
+- other identity sources
 - new resource types from open or unmerged changes in the Python repository
 
 The Go implementation may correct unsafe failure handling without widening the set of resources it can delete. 
@@ -87,7 +87,7 @@ The code should be split into three parts with clear responsibilities.
 The controller handles Kubernetes concerns:
 
 - reading `OpenStackCluster` and related Kubernetes objects
-- honouring pause and watch-filter behaviour
+- honoring pause behavior
 - managing the Janitor finalizer
 - resolving configuration and policy
 - calling one cleanup iteration
@@ -134,10 +134,11 @@ A reconcile should follow this general shape:
 4. Return without cleanup if deletion has not started
 5. Return if no recognised Janitor finalizer is present
 6. Resolve the existing Secret-based identity and cleanup policy
-7. Run one bounded cleanup iteration
-8. Return `RequeueAfter` when OpenStack is still completing an accepted delete
-9. Return an error when an operation has failed
-10. Remove the finalizer only after required cleanup has been verified
+7. Reject unsupported identity or authentication input before any cloud request
+8. Run one bounded cleanup iteration
+9. Return `RequeueAfter` when OpenStack is still completing an accepted delete
+10. Return an error when an operation has failed
+11. Remove the finalizer only after required cleanup has been verified
 
 The controller must not call `time.Sleep` or poll in a loop during reconcile.
 Expected waiting uses `RequeueAfter`. Failures are returned so that the controller-runtime workqueue can apply backoff.
@@ -174,7 +175,7 @@ The initial OpenStack client should deliberately retain the Python controller's 
 
 Gophercloud may support more configurations, but the Janitor should validate
 the initial supported set rather than enabling new behaviour accidentally.
-(`ClusterIdentity`, additional authentication methods, and different identity sources are follow-up features.)
+Other identity sources and authentication methods require separate compatibility work.
 
 > [!IMPORTANT]
 >CAPO API types are part of the watched contract, but CAPO internal packages and broad implementation interfaces should not become dependencies of the Janitor.
@@ -183,14 +184,15 @@ the initial supported set rather than enabling new behaviour accidentally.
 
 The successful Python baseline path establishes the initial order:
 
-1. floating IPs
-2. service load balancers when the existing load balancer gate is true
-3. service load balancer security groups
-4. snapshots when volume policy is `delete`
-5. volumes when volume policy is `delete`
-6. application credential when credential policy permits it
-7. credential Secret when credential policy permits it
-8. Janitor finalizer
+1. complete the shared-LB and floating-IP ownership preflight
+2. floating IPs
+3. service load balancers, independently of CAPO API server LB state
+4. service load balancer security groups
+5. snapshots when volume policy is `delete`
+6. volumes when volume policy is `delete`
+7. application credential when credential policy permits it
+8. credential Secret when credential policy permits it
+9. Janitor finalizer
 
 The Go controller may spread this work across several reconciliations. An accepted OpenStack delete request is not proof that the resource is gone.
 Before moving past a dependency or removing the finalizer, the controller must observe the required resource as absent.
@@ -198,20 +200,24 @@ Before moving past a dependency or removing the finalizer, the controller must o
 > The important dependency pairs are floating IP before load balancer, loadbalancer before its service security group, and snapshot before volume.
 
 Independent errors may be collected when that is safe, but an incomplete inventory must never be treated as successful cleanup.
+The LB preflight uses complete OCCM reserved ownership tags and VIP/FIP association facts.
+Pool member names and ports are not ownership evidence.
 
 ## Credential cleanup
 
 Application credential deletion is the last OpenStack operation because it removes the controller's ability to inspect the project.
+Any earlier cleanup or inventory failure retains the credential, Secret, and finalizer so the controller can retry.
 
 Before attempting it, the controller should persist a **Janitor owned checkpoint** showing that all other resources have been verified absent. 
-This closes the restart window between application credential deletion, Secret deletion, and finalizer removal.
+The checkpoint records the restart state and prevents unsafe Secret or finalizer removal after a process failure.
 
 The checkpoint does not add a new cleanup responsibility. It makes the existing credential policy safe to implement in a level-based controller.
 
-The Python controller treats a `403` while deleting an application credential as a warning and continues, because a restricted application credential may not be allowed to delete itself. Initial Go behaviour should retain this documented exception unless the team agrees to change it. 
-The exception is specific to application credential self-deletion and must not be applied to other resource deletion failures.
+The Go controller does not copy the Python behavior that continues after application credential self-deletion returns `403`.
+Only exact credential DELETE `204` or exact bound-credential `404` authorizes deletion of the recorded Secret.
+A `401`, `403`, transport failure, or unclassified response retains the Secret and finalizer and does not advance the checkpoint.
 
-Missing or invalid credentials before the resources-verified checkpoint must block finalizer removal. 
+Missing or invalid credentials before `credentialDeleteStarted` must block finalizer removal.
 The Python implementation can remove the finalizer when the Secret is missing, but carrying that behaviour forward could leak resources. 
 This is recorded as an intentional safety correction rather than a scope change.
 
@@ -233,7 +239,7 @@ Pure unit tests cover policy, ownership filters, negative near-matches, ordering
 Gophercloud service tests use HTTP fixtures to cover authentication, endpoint selection, pagination, delete options, response classification, and context cancellation.
 
 Controller tests use envtest with the required CAPI and CAPO CRDs. 
-They cover finalizers, pause, watch filters, Secret changes, retries, conflicts, and restarts between cleanup phases.
+They cover finalizers, pause, Secret changes, retries, conflicts, and restarts between cleanup phases.
 
 A real OpenStack end-to-end test is required before release. 
 It must prove both sides of the deletion boundary by deleting owned fixtures and keeping similar but not owned fixtures.
@@ -258,7 +264,7 @@ Unresolved behaviour should be marked as deferred and discussed before implement
 The initial Go release is ready when the following criteria are met. 
 These are release acceptance criteria rather than an implementation progress checklist.
 
-- the three design documents match the shipped behaviour
+- the linked design documents match the shipped behaviour
 - every ownership rule has positive and negative tests
 - resource ownership selectors are no broader than the Python baseline
 - any intentional difference from the Python baseline is agreed, documented in the behaviour matrix, and tested

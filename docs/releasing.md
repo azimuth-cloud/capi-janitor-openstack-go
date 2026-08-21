@@ -4,9 +4,9 @@ Git tags are the source of truth for released versions. Do not update a version
 file or ask GoReleaser to calculate the next version.
 
 > [!WARNING]
-> The Go rewrite is still stabilising throughout the `v0.x.y` series and is not
-> yet considered production-stable. Test migration from the Python controller
-> and rollback to it before deploying a release.
+> The Go rewrite is still stabilizing throughout the `v0.x.y` series and is not yet considered production-stable.
+> Test migration from the Python controller before deploying a release.
+> Rollback during active deletion is restricted by the [compatibility policy](design/python-compatibility-policy.md#retry-and-recovery).
 
 ## Version tags
 
@@ -39,9 +39,7 @@ branch and commit-SHA tags, but they do not create GitHub Releases.
   container images.
 - The existing Helm publisher packages and publishes the chart after both Nix
   image architectures have been pushed.
-- GoReleaser builds the Linux `amd64` and `arm64` `manager` binaries, archives
-  them with the README and licence, creates SHA-256 checksums, and attaches the
-  standalone Kubernetes bundle to the GitHub Release.
+- GoReleaser builds the Linux `amd64` and `arm64` `manager` binaries, archives them with the README and license, creates SHA-256 checksums, and attaches the standalone Kubernetes bundle to the GitHub Release.
 
 The Nix image and GoReleaser archives are separate builds from the same tagged
 commit; they are not expected to contain byte-identical binaries.

@@ -68,7 +68,9 @@ release:
   header: |
     {{- if eq .Major "0" }}
     > [!WARNING]
-    > The Go rewrite is still stabilising throughout the v0.x.y series and is not yet considered production-stable. Test migration and rollback before deployment.
+    > The Go rewrite is still stabilizing throughout the v0.x.y series and is not yet considered production-stable.
+    > Test migration before deployment.
+    > Do not hand an actively deleting object back to Python unless it was audited before `credentialDeleteStarted`; otherwise use Go forward recovery or break-glass.
     {{ end }}
   extra_files:
     - glob: ./.release/install.yaml

@@ -34,6 +34,8 @@ The other decisions in this document are fixed rules:
 The replacement release adds no OpenStack deletion target, primary Kubernetes kind, CRD, or operator-selectable cleanup policy.
 It adds one internal checkpoint annotation.
 A new deletion target, skip switch, force-finalize switch, or policy annotation requires a separate design proposal.
+The initial replacement keeps the Python all-namespace watch and does not add a watch-filter setting.
+Migration uses a deployment-level handoff so that Python and Go never manage the same object concurrently.
 
 Validation is split into two support profiles:
 

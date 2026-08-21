@@ -30,7 +30,7 @@ The decisions used below are:
 | Cluster name | Uses `cluster.x-k8s.io/cluster-name`, falling back to `OpenStackCluster.metadata.name` | Keep the precedence. As a safety correction, block an empty resolved name before discovery | Label present and absent resolve correctly; an empty label or name makes no cloud call |
 | Missing required identity Secret | Logs the error, skips OpenStack cleanup, and can remove the finalizer | Before the recorded Secret-delete phase, keep the finalizer and report a blocked cleanup. Absence after `secretDeleteStarted` is idempotent completion | A missing Secret before the write-ahead delete phase never causes success; absence after `secretDeleteStarted` completes the exact recorded deletion |
 | Paused objects | No explicit CAPI pause handling | Safety correction. Honor pause on the Cluster or OpenStackCluster | A paused object performs no cleanup and retains the finalizer |
-| Watch filter | No standard CAPI watch filter | Add the standard filter as an operational safeguard without changing ownership rules | When configured, only labeled objects are reconciled |
+| Watch filter | No standard CAPI watch filter | Keep the all-namespace watch. Defer a watch-filter setting beyond the initial replacement | Not a replacement-release gate |
 | Retry mechanism | Sleeps and writes a random retry annotation | Keep outcome, use returned errors and `RequeueAfter` | Expected waiting returns `RequeueAfter` and failures return an error without annotation churn |
 | Status | Does not own a Janitor status API | Keep. Do not write CAPO-owned status or conditions | Reconcile leaves `OpenStackCluster.status` unchanged |
 

@@ -809,7 +809,7 @@ Feature: Reconcile Resilience to Kubernetes API Errors
     And a conflict is retried from a fresh object
 ```
 
-#### US8.6 — Pause, Watch Filters, and Controller Wiring
+#### US8.6 — Pause, Secondary Watches, and Controller Wiring
 
 ```gherkin
 Feature: Controller Runtime Safeguards
@@ -817,11 +817,6 @@ Feature: Controller Runtime Safeguards
     Given the CAPI Cluster or OpenStackCluster is paused
     When reconciliation runs
     Then no OpenStack request is made and the finalizer remains
-
-  Scenario: Watch filter does not match
-    Given the configured CAPI watch-filter label does not match
-    When the watch predicate evaluates the object
-    Then no reconcile request is created
 
   Scenario: A referenced object changes
     Given the identity Secret or owning Cluster changes
@@ -958,8 +953,8 @@ Upgrade the CAPO dependency from `v0.14.6` to the `v0.14.7` Azimuth replacement 
 ```gherkin
 Feature: Python-to-Go Replacement Validation
   Scenario: Controller deployment changes
-    Given Python and Go never manage the same object concurrently
-    And the runbook applies any configured watch-filter label before cutover
+    Given the object is a CAPO v1beta1 OpenStackCluster using a direct Secret
+    And the Python controller is stopped before the Go controller starts
     When an eligible object moves to Go
     Then the legacy finalizer is recognized and cleanup converges
 
@@ -1129,11 +1124,10 @@ This checked list records the initial implementation pass, not replacement readi
 
 1. [x] Settle the Python `0.15.0` compatibility policy, ownership matrix, behavior matrix, and regression ledger
 2. [ ] Build and connect the non-credential typed Gophercloud runner after US2.1–US7.2 and US12.1–US12.4 pass
-3. [ ] Make reconciliation bounded and level based, with conflict-safe patches, secondary watches, pause, watch filter, and leader election under US8.1–US9.1
+3. [ ] Make reconciliation bounded and level based, with conflict-safe patches, secondary watches, pause, and leader election under US8.1–US9.1
 4. [ ] Implement and failure-inject US7.3, connect the Keystone transition, cut production over, and remove the legacy manual HTTP resource path
 5. [ ] Pass envtest, Kind, real OpenStack ownership, migration, handback, and break-glass scenarios in US8.6 and US10.5
 6. [ ] Close release publication, Helm/Kustomize parity, immutable input, provenance, RC, and soak work in US10.1–US10.4
-7. [ ] Complete the deferred `OpenStackClusterIdentity` community gate in US1.6 before advertising that compatibility profile
 
 ## Final Result
 
@@ -1173,7 +1167,9 @@ Typed replacement data plane (required stories in Epics 1–7 and 12)
 
 ## Deferred Work
 
-The replacement adds no cleanup target or authentication family beyond application credentials and the approved password path; every extension follows [When the scope can grow](docs/design/go-rewrite-guidelines.md#when-the-scope-can-grow).
+The replacement adds no cleanup target or authentication family beyond application credentials and the approved password path.
+It keeps the Python all-namespace watch and uses a deployment-level controller handoff during migration.
+`OpenStackClusterIdentity`, `v1beta2`, new cleanup settings, and a watch-filter setting remain deferred; every extension follows [When the scope can grow](docs/design/go-rewrite-guidelines.md#when-the-scope-can-grow).
 
 ## Definition of Replacement Complete
 

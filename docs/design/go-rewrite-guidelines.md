@@ -86,7 +86,7 @@ The code should be split into three parts with clear responsibilities.
 The controller handles Kubernetes concerns:
 
 - reading `OpenStackCluster` and related Kubernetes objects
-- honoring pause and watch-filter behavior
+- honoring pause behavior
 - managing the Janitor finalizer
 - resolving configuration and policy
 - calling one cleanup iteration
@@ -236,7 +236,7 @@ Pure unit tests cover policy, ownership filters, negative near-matches, ordering
 Gophercloud service tests use HTTP fixtures to cover authentication, endpoint selection, pagination, delete options, response classification, and context cancellation.
 
 Controller tests use envtest with the required CAPI and CAPO CRDs.
-They cover finalizers, pause, watch filters, Secret changes, retries, conflicts, and restarts between cleanup phases.
+They cover finalizers, pause, Secret changes, retries, conflicts, and restarts between cleanup phases.
 
 A real OpenStack end-to-end test is required before release.
 It must prove both sides of the deletion boundary by deleting owned fixtures and keeping similar but not owned fixtures.

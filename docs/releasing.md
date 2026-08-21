@@ -4,13 +4,15 @@ Git tags are the source of truth for released versions. Do not update a version
 file or ask GoReleaser to calculate the next version.
 
 > [!WARNING]
-> The Go rewrite is still stabilising throughout the `v0.x.y` series and is not
-> yet considered production-stable. Test migration from the Python controller
-> and rollback to it before deploying a release.
+> The Go rewrite is still stabilizing throughout the `v0.x.y` series and is not yet considered stable for production.
+> Test migration from the Python controller before deploying a release.
+> Stop the Python controller before starting the Go controller.
+> Roll back only when no managed object is actively deleting.
+> The Go controller remains responsible for recovery after deletion starts.
 
 ## Version tags
 
-Release tags must use OCI-compatible Semantic Versioning:
+Release tags must use Semantic Versioning that is valid for OCI:
 
 ```text
 vMAJOR.MINOR.PATCH[-PRERELEASE]
@@ -30,8 +32,8 @@ A tag maps to the artifacts as follows:
 | Binary archives | `capi-janitor-openstack-go_v0.2.0_linux_<arch>.tar.gz` |
 | Kubernetes bundle | `install.yaml`, referencing the `v0.2.0` OCI image |
 
-The OCI workflow also publishes a commit-SHA tag. Branch builds continue to use
-branch and commit-SHA tags, but they do not create GitHub Releases.
+The OCI workflow also publishes a tag for the commit SHA.
+Branch builds continue to use branch tags and commit SHA tags, but they do not create GitHub Releases.
 
 ## What builds each artifact
 
@@ -39,12 +41,10 @@ branch and commit-SHA tags, but they do not create GitHub Releases.
   container images.
 - The existing Helm publisher packages and publishes the chart after both Nix
   image architectures have been pushed.
-- GoReleaser builds the Linux `amd64` and `arm64` `manager` binaries, archives
-  them with the README and licence, creates SHA-256 checksums, and attaches the
-  standalone Kubernetes bundle to the GitHub Release.
+- GoReleaser builds the Linux `amd64` and `arm64` `manager` binaries, archives them with the README and license, creates SHA-256 checksums, and attaches the standalone Kubernetes bundle to the GitHub Release.
 
-The Nix image and GoReleaser archives are separate builds from the same tagged
-commit; they are not expected to contain byte-identical binaries.
+The Nix image and GoReleaser archives are separate builds from the same tagged commit.
+They are not expected to contain identical binaries.
 
 ## Before tagging
 
@@ -65,7 +65,7 @@ commit; they are not expected to contain byte-identical binaries.
 
 The tag workflow deliberately publishes in this order:
 
-1. Build and push the multi-architecture OCI image with Nix.
+1. Build and push the OCI image for both architectures with Nix.
 2. Package and publish the Helm chart.
 3. Build the binary archives and Kubernetes bundle and upload them to a draft
    GitHub Release.
@@ -73,8 +73,9 @@ The tag workflow deliberately publishes in this order:
 
 If an image or chart job fails, no GitHub Release is created. If GoReleaser
 fails after creating its draft, the draft remains private and can be reused by a
-rerun. Fix the failure and rerun the failed job; do not create or move another
-tag for the same version.
+rerun.
+Fix the failure and rerun the failed job.
+Do not create or move another tag for the same version.
 
 ## Local snapshot
 
@@ -84,6 +85,6 @@ With GoReleaser v2 installed, the same packaging validation can be run locally:
 goreleaser release --snapshot --clean
 ```
 
-Snapshot artifacts are written to `.release/dist/`; the generated release
-bundle is staged at `.release/install.yaml`. The `.release/` directory is not
-committed.
+Snapshot artifacts are written to `.release/dist/`.
+The generated release bundle is staged at `.release/install.yaml`.
+The `.release/` directory is not committed.

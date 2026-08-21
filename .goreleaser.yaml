@@ -5,9 +5,9 @@ version: 2
 project_name: capi-janitor-openstack-go
 dist: .release/dist
 
-# Generate the standalone Kubernetes bundle from the committed manifests. The
-# tagged build points at the identically tagged Nix-built OCI image; snapshots
-# use a non-published placeholder tag and only validate packaging.
+# Generate the standalone Kubernetes bundle from the committed manifests.
+# Each tagged build points at the identically tagged OCI image from Nix.
+# Snapshots use an unpublished placeholder tag and only validate packaging.
 before:
   hooks:
     - >-
@@ -68,7 +68,11 @@ release:
   header: |
     {{- if eq .Major "0" }}
     > [!WARNING]
-    > The Go rewrite is still stabilising throughout the v0.x.y series and is not yet considered production-stable. Test migration and rollback before deployment.
+    > The Go rewrite is still stabilizing throughout the v0.x.y series and is not yet considered stable for production.
+    > Test migration before deployment.
+    > Stop the Python controller before starting the Go controller.
+    > Roll back only when no managed object is actively deleting.
+    > The Go controller remains responsible for recovery after deletion starts.
     {{ end }}
   extra_files:
     - glob: ./.release/install.yaml

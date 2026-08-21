@@ -8,34 +8,40 @@ and the
 for Kubernetes clusters created with the
 [Cluster API OpenStack infrastructure provider (CAPO)](https://github.com/kubernetes-sigs/cluster-api-provider-openstack).
 
-The operator watches `OpenStackCluster` resources and, upon deletion, removes any
-dangling OpenStack resources (floating IPs, load balancers, security groups, Cinder
-volumes and snapshots, and the application credential) that would otherwise be left
-behind after the CAPI cluster is gone.
+The operator watches `OpenStackCluster` resources and, upon deletion, removes any dangling OpenStack resources (floating IPs, load balancers, security groups, and Cinder volumes and snapshots) that would otherwise be left behind after the CAPI cluster is gone.
+It can also remove a cluster application credential when the identity and cleanup policy permit it.
 
-## Requirements
+> [!IMPORTANT]
+> This repository is still working toward the replacement release criteria.
+> The [roadmap](ROADMAP.md) tracks implementation status.
+> The [Python compatibility policy](docs/design/python-compatibility-policy.md) defines the settled target contract.
+> A documented target is not a claim that the current runtime path already implements it.
 
-| Tool | Minimum version |
+## Current build inputs
+
+The Kubernetes, CAPI, and CAPO support matrix has not yet been validated for a replacement release.
+The current source builds against these versions:
+
+| Dependency | Current version |
 |---|---|
 | Go | 1.26 |
-| Kubernetes | 1.29 |
-| CAPO | 0.14 |
+| Kubernetes Go modules | 0.36.2 |
+| CAPO API module | 0.14.6 |
+| controller-runtime | 0.24.1 |
 | Helm | 3.x |
 
 ## How it works
 
+This is the target replacement lifecycle.
+The roadmap lists the steps that are not yet active in the production path.
+
 1. When an `OpenStackCluster` is created, the operator adds its finalizer
    (`janitor.capi.stackhpc.com`) to the resource.
-2. When the `OpenStackCluster` is marked for deletion (`deletionTimestamp` set),
-   the operator authenticates to OpenStack using the credential referenced by
-   `spec.identityRef` and deletes all resources tagged with the cluster name.
+2. When the `OpenStackCluster` is marked for deletion (`deletionTimestamp` set), the operator authenticates to OpenStack using the credential referenced by `spec.identityRef` and selects owned resources using the documented name, description, and metadata rules.
 3. The cluster name is taken from the `cluster.x-k8s.io/cluster-name` label if
    present, falling back to `metadata.name`.
-4. Once the purge succeeds the finalizer is removed and the `OpenStackCluster` can
-   be fully deleted.
-5. If the purge fails, the operator sets a retry annotation
-   (`janitor.capi.stackhpc.com/retry`) and returns without error, triggering a
-   re-reconcile.
+4. After the required OpenStack resources are verified absent, the operator applies the configured application-credential and Secret policy.
+5. The finalizer is removed only after every required phase completes. Expected OpenStack waits are requeued; failures retain the finalizer.
 
 > **Why a finalizer instead of a post-delete job?**
 >
@@ -48,12 +54,12 @@ behind after the CAPI cluster is gone.
 
 | OpenStack service | Resources |
 |---|---|
-| Neutron | Floating IPs associated with `LoadBalancer` services |
-| Octavia | Load balancers with name prefix `kube_service_<cluster>_` |
+| Neutron | Floating IPs associated with Kubernetes Services of type `LoadBalancer` |
+| Octavia | Load balancers with name prefix `kube_service_<cluster>_`, except LBs shared with another cluster |
 | Neutron | Security groups matching the OCCM naming convention |
 | Cinder | Volumes provisioned by the Cinder CSI (configurable — see below) |
-| Cinder | Snapshots of those volumes |
-| Keystone | The application credential used by the cluster (if authorised) |
+| Cinder | Snapshots carrying the matching Cinder cluster metadata |
+| Keystone | The application credential used by the cluster (if authorized) |
 
 ## Configuration
 
@@ -86,12 +92,16 @@ metadata:
 openstack volume set --property janitor.capi.azimuth-cloud.com/keep=true <volume>
 ```
 
-Any value other than `true` results in the volume being deleted.
+Any value other than `true` does not opt the volume out.
+It remains eligible when the cluster volume policy is `delete` and the ownership metadata matches.
+This property does not protect snapshots with matching cluster metadata.
 
 ### Retry delay
 
-When cleanup fails, the operator waits before re-queuing. The default delay is
-60 seconds and can be changed via Helm:
+Operational failures use per-object exponential backoff starting at one second.
+The configurable value is the maximum delay and defaults to 60 seconds.
+Expected deletion waits use a short requeue and do not block a controller worker.
+The configured value must be a positive integer number of seconds.
 
 ```sh
 helm upgrade ... --set retryDefaultDelay=120
@@ -102,25 +112,42 @@ helm upgrade ... --set retryDefaultDelay=120
 | Variable | Default | Description |
 |---|---|---|
 | `CAPI_JANITOR_DEFAULT_VOLUMES_POLICY` | `delete` | Operator-wide volume policy |
-| `CAPI_JANITOR_RETRY_DEFAULT_DELAY` | `60` | Retry delay in seconds |
+| `CAPI_JANITOR_RETRY_DEFAULT_DELAY` | `60` | Maximum error-backoff delay in seconds |
 
 ## Installation
 
 ### OpenStack credentials
 
-The release bundle does not include OpenStack credentials. Before installing the operator, make sure that each `OpenStackCluster` references a Secret in the same namespace through `spec.identityRef`. 
-The Secret must contain a `clouds.yaml` key with valid OpenStack credentials and may also contain a `cacert` key for a custom CA certificate.
+The release bundle does not include OpenStack credentials.
+The replacement profile reads the direct Secret referenced by `spec.identityRef` in the `OpenStackCluster` namespace; the Secret contains `clouds.yaml` and may contain a custom `cacert`.
+`spec.identityRef.cloudName` selects the cloud entry, while the `openstack` default is limited to the Python migration path.
 
-The operator uses `spec.identityRef.cloudName` to select an entry from
-`clouds.yaml`, when it is not set, the entry name defaults to `openstack`.
-In a standard CAPO deployment, this is the same credential Secret already used by CAPO, so no separate operator-wide credential Secret is required.
+The target contract supports `v3applicationcredential` and project-scoped password authentication.
+The [compatibility policy](docs/design/python-compatibility-policy.md#approved-password-extension) defines the accepted password forms and validation rules.
+
+For a direct application-credential identity, the Secret annotation `janitor.capi.stackhpc.com/credential-policy: delete` opts into deletion of the application credential and referenced Secret after other resources are gone and the Janitor finalizer is last.
+Missing or any other value keeps both.
+
+The identity source and authentication type determine the lifecycle:
+
+| Identity | OpenStack resource cleanup | Credential and Secret cleanup |
+| --- | --- | --- |
+| Direct application-credential Secret | Supported | Exact `credential-policy: delete` opts in after restart-safe verification |
+| Direct password Secret | Supported | Keystone user, password, and Secret are always retained |
+| `identityRef.type: ClusterIdentity` community profile | Available only after its separate compatibility gate passes | Identity, backing Secret, and credential are always retained |
+
+The delete annotation declares ownership of a direct application-credential Secret and must not be set on a shared Secret.
+It is ignored with a warning for password and community identity inputs.
+
+Shared load balancer protection is defined by the [ownership matrix](docs/design/resource-ownership-matrix.md#shared-load-balancer-floating-ip).
+The compatibility policy defines [Octavia outcomes](docs/design/python-compatibility-policy.md#octavia-capability-and-error-policy) and [credential recovery](docs/design/python-compatibility-policy.md#retry-and-recovery).
 
 Do not add credentials to the release bundle or commit them to the repository.
 
 ```sh
 helm repo add \
   cluster-api-janitor-openstack \
-  https://azimuth-cloud.github.io/cluster-api-janitor-openstack
+  https://azimuth-cloud.github.io/capi-janitor-openstack-go
 
 helm upgrade \
   cluster-api-janitor-openstack \
@@ -145,9 +172,7 @@ go build ./...
 go test ./...
 ```
 
-The test suite covers 168 unit tests across 4 packages (93% statement coverage
-in `internal/`) using only the standard `testing` package and
-`controller-runtime`'s fake client — no external cluster required.
+Current test evidence and the gaps that aggregate coverage cannot close are tracked in the [roadmap](ROADMAP.md#final-result).
 
 ### Lint and format
 
@@ -170,14 +195,13 @@ make build         # go build ./cmd/main.go
 
 ## Building the OCI image
 
-### Nix (reproducible, multi-arch + SBOM)
+### Nix (multi-arch + SBOM)
 
-CI uses `nix-build` for reproducible builds. The `tests` derivation runs
-`go fmt`, `go vet`, and the full unit-test suite inside the Nix sandbox — no
-external toolchain needed:
+CI uses `nix-build` for Nix-based builds.
+The `tests` derivation runs `go fmt`, `go vet`, and the full unit-test suite inside the Nix sandbox — no external toolchain needed:
 
 ```sh
-# CI check: go fmt + go vet + 168 unit tests
+# CI check: go fmt + go vet + unit tests
 nix-build nix -A tests
 
 # Build the manager binary only
@@ -193,19 +217,13 @@ nix-build nix -A image-arm64
 nix-build nix -A sbom
 ```
 
-> **`nix/nixpkgs.nix`** pins `nixos-26.05` (Go 1.26+).
-> **`vendorHash`** in `nix/default.nix` is set to `sha256-<hashcode>`
-> (run `nix-build nix -A manager` after any `go.mod` change — the build will
-> fail and print the new hash to substitute).
-
-**Binary linkage note**: on macOS the local build produces a darwin/arm64 Mach-O
-(dynamically linked against system libraries — normal for Go on Darwin). The
-arm64 image produced via `pkgsCross.aarch64-multiplatform` contains a Linux ELF
-dynamically linked against glibc; `buildLayeredImage` automatically includes the
-full Nix closure (glibc and its dependencies) so the image is self-contained and
-runs correctly in Kubernetes.
+> **`nix/nixpkgs.nix`** currently follows the moving `nixos-26.05` branch; an immutable revision and hash are a release-hardening task.
+>
+> **`vendorHash`** in `nix/default.nix` pins the Go dependency source (run `nix-build nix -A manager` after any `go.mod` change — the build will fail and print the new hash to substitute).
 
 ## Observability
+
+The manager exposes metrics and emits Kubernetes Events; deployment-path parity remains a [release task](ROADMAP.md#replacement-release-work).
 
 ### Prometheus metrics
 
@@ -225,12 +243,17 @@ runs correctly in Kubernetes.
 ```
 cmd/                        # Operator entry point
 internal/
+  cleanup/                  # Cleanup policy, outcomes, and service interfaces
   controller/               # Reconciler, metrics, config
-  openstack/                # Authentication, resource discovery & deletion
+  openstack/                # Authentication and legacy cleanup path
+    network/                # Typed Neutron service
+    loadbalancer/           # Typed Octavia service
+    volume/                 # Typed Cinder service
+    identity/               # Typed Keystone service
 chart/                      # Helm chart
   templates/
   tests/                    # helm-unittest tests
-nix/                        # Reproducible OCI build + SBOM (no Flake)
+nix/                        # Nix-based OCI build + SBOM (no Flake)
 config/                     # Kustomize bases (RBAC, manager, Prometheus)
 test/e2e/                   # End-to-end test suite (Ginkgo)
 ```

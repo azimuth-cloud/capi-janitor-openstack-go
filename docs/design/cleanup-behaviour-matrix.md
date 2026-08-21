@@ -114,4 +114,4 @@ The decisions used below are:
 ## Scope boundary
 
 The direct-Secret profile is required for the replacement release; community identity and `v1beta2` support have separate gates in the [compatibility policy](python-compatibility-policy.md#supported-capo-lanes).
-This matrix records observable outcomes and required tests; deferred scope and compatibility gates remain in the compatibility policy.
+This matrix records observable outcomes and required tests; deferred scope remains in the [Go rewrite guidelines](go-rewrite-guidelines.md#what-feature-parity-means) and [roadmap](../../ROADMAP.md#deferred-work).

@@ -54,7 +54,7 @@ func New(client *openstackclient.Client) (*Service, error) {
 
 // ListFloatingIPs lists all floating IPs in the authenticated project.
 func (s *Service) ListFloatingIPs(ctx context.Context) ([]cleanup.FloatingIP, error) {
-	var result []cleanup.FloatingIP
+	var listedFloatingIPs []cleanup.FloatingIP
 	pager := floatingips.List(s.client, floatingips.ListOpts{ProjectID: s.projectID}).WithPageCreator(
 		func(pageResult pagination.PageResult) pagination.Page {
 			return pageutil.NewValidatedCollectionPage(
@@ -69,22 +69,35 @@ func (s *Service) ListFloatingIPs(ctx context.Context) ([]cleanup.FloatingIP, er
 	err := pager.EachPage(
 		ctx,
 		func(_ context.Context, page pagination.Page) (bool, error) {
-			pageFloatingIPs, err := floatingips.ExtractFloatingIPs(pageutil.UnwrapCollectionPage(page))
+			attachedPortIDs, err := extractFloatingIPAttachedPortIDs(page)
+			if err != nil {
+				return false, err
+			}
+
+			decodedFloatingIPs, err := floatingips.ExtractFloatingIPs(pageutil.UnwrapCollectionPage(page))
 			if err != nil {
 				return false, fmt.Errorf("extracting floating IP page: %w", err)
 			}
+			if len(decodedFloatingIPs) != len(attachedPortIDs) {
+				return false, fmt.Errorf(
+					"validating floating IP page: extracted %d resources from %d raw resources",
+					len(decodedFloatingIPs),
+					len(attachedPortIDs),
+				)
+			}
 
-			for _, floatingIP := range pageFloatingIPs {
-				belongs, err := resourceBelongsToProject(floatingIP.ProjectID, floatingIP.TenantID, s.projectID)
+			for index, floatingIP := range decodedFloatingIPs {
+				belongsToSelectedProject, err := resourceBelongsToProject(floatingIP.ProjectID, floatingIP.TenantID, s.projectID)
 				if err != nil {
 					return false, fmt.Errorf("validating floating IP %q project ownership: %w", floatingIP.ID, err)
 				}
-				if !belongs {
+				if !belongsToSelectedProject {
 					continue
 				}
-				result = append(result, cleanup.FloatingIP{
-					ID:          floatingIP.ID,
-					Description: floatingIP.Description,
+				listedFloatingIPs = append(listedFloatingIPs, cleanup.FloatingIP{
+					ID:             floatingIP.ID,
+					Description:    floatingIP.Description,
+					AttachedPortID: attachedPortIDs[index],
 				})
 			}
 
@@ -94,7 +107,47 @@ func (s *Service) ListFloatingIPs(ctx context.Context) ([]cleanup.FloatingIP, er
 	if err != nil {
 		return nil, fmt.Errorf("listing floating IPs: %w", apierrors.PreserveReauthenticationErrors(err))
 	}
-	return result, nil
+	return listedFloatingIPs, nil
+}
+
+func extractFloatingIPAttachedPortIDs(page pagination.Page) ([]string, error) {
+	responseBody, ok := page.GetBody().(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("validating floating IP attached port IDs: response body must be an object, got %T", page.GetBody())
+	}
+
+	rawFloatingIPs, ok := responseBody["floatingips"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("validating floating IP attached port IDs: floatingips must be an array, got %T", responseBody["floatingips"])
+	}
+
+	attachedPortIDs := make([]string, len(rawFloatingIPs))
+	for index, rawFloatingIP := range rawFloatingIPs {
+		floatingIPFields, ok := rawFloatingIP.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("validating floating IP attached port IDs: floatingips[%d] must be an object, got %T", index, rawFloatingIP)
+		}
+
+		rawPortID, hasPortID := floatingIPFields["port_id"]
+		if !hasPortID {
+			return nil, fmt.Errorf("validating floating IP attached port IDs: floatingips[%d].port_id is missing", index)
+		}
+		if rawPortID == nil {
+			continue
+		}
+
+		portID, ok := rawPortID.(string)
+		if !ok {
+			return nil, fmt.Errorf(
+				"validating floating IP attached port IDs: floatingips[%d].port_id must be a string or null, got %T",
+				index,
+				rawPortID,
+			)
+		}
+		attachedPortIDs[index] = portID
+	}
+
+	return attachedPortIDs, nil
 }
 
 // DeleteFloatingIP deletes the floating IP with the given ID.
@@ -103,7 +156,8 @@ func (s *Service) DeleteFloatingIP(ctx context.Context, id string) error {
 		return errors.New("deleting floating IP: ID is empty")
 	}
 
-	if err := apierrors.ClassifyDelete(floatingips.Delete(ctx, s.client, id).ExtractErr()); err != nil {
+	err := apierrors.ClassifyDelete(floatingips.Delete(ctx, s.client, id).ExtractErr())
+	if err != nil {
 		return fmt.Errorf("deleting floating IP %q: %w", id, err)
 	}
 	return nil
@@ -160,7 +214,8 @@ func (s *Service) DeleteSecurityGroup(ctx context.Context, id string) error {
 		return errors.New("deleting security group: ID is empty")
 	}
 
-	if err := apierrors.ClassifyDelete(groups.Delete(ctx, s.client, id).ExtractErr()); err != nil {
+	err := apierrors.ClassifyDelete(groups.Delete(ctx, s.client, id).ExtractErr())
+	if err != nil {
 		return fmt.Errorf("deleting security group %q: %w", id, err)
 	}
 	return nil

@@ -2,14 +2,17 @@ package cleanup
 
 // FloatingIP contains only the Neutron fields needed by the ownership rule.
 type FloatingIP struct {
-	ID          string
-	Description string
+	ID             string
+	Description    string
+	AttachedPortID string
 }
 
 // LoadBalancer contains only the Octavia fields needed by the ownership rule.
 type LoadBalancer struct {
-	ID   string
-	Name string
+	ID        string
+	Name      string
+	Tags      []string
+	VIPPortID string
 }
 
 // SecurityGroup contains only the Neutron fields needed by the ownership

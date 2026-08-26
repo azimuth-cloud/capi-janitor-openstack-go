@@ -85,7 +85,7 @@ func TestNewValidatesClient(t *testing.T) {
 	})
 }
 
-func TestListFloatingIPsEveryPageMapsAndScopesProject(t *testing.T) {
+func TestListFloatingIPsReturnsAttachedPortIDsFromEveryPageInSelectedProject(t *testing.T) {
 	var requests atomic.Int32
 	service := newServiceFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v2.0/floatingips" {
@@ -105,6 +105,7 @@ func TestListFloatingIPsEveryPageMapsAndScopesProject(t *testing.T) {
 						"description":         "second page",
 						"project_id":          testProjectID,
 						"floating_ip_address": "192.0.2.2",
+						"port_id":             "",
 					},
 				},
 				"floatingips_links": []any{},
@@ -120,22 +121,26 @@ func TestListFloatingIPsEveryPageMapsAndScopesProject(t *testing.T) {
 					"project_id":          testProjectID,
 					"tenant_id":           testProjectID,
 					"floating_ip_address": "192.0.2.1",
+					"port_id":             "port-1",
 					"status":              "ACTIVE",
 				},
 				map[string]any{
 					"id":          "legacy-fip",
 					"description": "legacy tenant field",
 					"tenant_id":   testProjectID,
+					"port_id":     nil,
 				},
 				map[string]any{
 					"id":          "foreign-fip",
 					"description": "must not escape project boundary",
 					"project_id":  "project-2",
+					"port_id":     "foreign-port-1",
 				},
 				map[string]any{
 					"id":          "legacy-foreign-fip",
 					"description": "must not escape legacy project boundary",
 					"tenant_id":   "project-2",
+					"port_id":     "foreign-port-2",
 				},
 			},
 			"floatingips_links": []any{
@@ -152,15 +157,60 @@ func TestListFloatingIPsEveryPageMapsAndScopesProject(t *testing.T) {
 		t.Fatalf("listing floating IPs: %v", err)
 	}
 	want := []cleanup.FloatingIP{
-		{ID: "fip-1", Description: "first page"},
-		{ID: "legacy-fip", Description: "legacy tenant field"},
-		{ID: "fip-2", Description: "second page"},
+		{ID: "fip-1", Description: "first page", AttachedPortID: "port-1"},
+		{ID: "legacy-fip", Description: "legacy tenant field", AttachedPortID: ""},
+		{ID: "fip-2", Description: "second page", AttachedPortID: ""},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected floating IP mapping\nwant: %#v\n got: %#v", want, got)
 	}
 	if requests.Load() != 2 {
 		t.Fatalf("expected two pages, got %d requests", requests.Load())
+	}
+}
+
+func TestListFloatingIPsRejectsMissingOrInvalidAttachedPortID(t *testing.T) {
+	tests := []struct {
+		name          string
+		portIDPresent bool
+		portID        any
+	}{
+		{name: "missing port ID"},
+		{name: "numeric port ID", portIDPresent: true, portID: 42},
+		{name: "boolean port ID", portIDPresent: true, portID: true},
+		{name: "object port ID", portIDPresent: true, portID: map[string]any{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := newServiceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v2.0/floatingips" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.RequestURI())
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				floatingIPResponse := map[string]any{
+					"id":         "fip-1",
+					"project_id": testProjectID,
+				}
+				if tt.portIDPresent {
+					floatingIPResponse["port_id"] = tt.portID
+				}
+				w.Header().Set("Content-Type", "application/json")
+				writeJSON(t, w, map[string]any{"floatingips": []any{floatingIPResponse}})
+			})
+
+			got, err := service.ListFloatingIPs(context.Background())
+			if err == nil {
+				t.Fatal("expected missing or invalid port_id to fail inventory")
+			}
+			if got != nil {
+				t.Fatalf("expected invalid inventory to be discarded, got %#v", got)
+			}
+			if !strings.Contains(err.Error(), "port_id") {
+				t.Fatalf("expected port_id context, got %v", err)
+			}
+		})
 	}
 }
 
@@ -374,6 +424,9 @@ func TestListRejectsMalformedProjectOwnership(t *testing.T) {
 						return
 					}
 					item := map[string]any{"id": "unknown-owner", "description": "candidate"}
+					if resource.key == "floatingips" {
+						item["port_id"] = nil
+					}
 					for key, value := range ownership.fields {
 						item[key] = value
 					}
@@ -801,6 +854,9 @@ func paginatedFailureHandler(t *testing.T, kind string, pageStatus int, pageBody
 			"id":          "partial-resource",
 			"description": "must be discarded",
 			"project_id":  testProjectID,
+		}
+		if kind == "floatingips" {
+			resource["port_id"] = nil
 		}
 		writeJSON(t, w, map[string]any{
 			listKey: []any{resource},

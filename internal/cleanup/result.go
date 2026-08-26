@@ -10,9 +10,6 @@ const (
 	// OutcomeWaiting means that cleanup must observe OpenStack state again in a
 	// later reconciliation.
 	OutcomeWaiting Outcome = "waiting"
-	// OutcomeNotApplicable means that policy or observed state makes the current
-	// work unnecessary.
-	OutcomeNotApplicable Outcome = "not-applicable"
 )
 
 // Result is the controller-independent result of one cleanup iteration.

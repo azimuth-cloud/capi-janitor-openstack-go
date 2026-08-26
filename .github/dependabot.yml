@@ -19,18 +19,6 @@ updates:
       - dependency-name: "github-actions/*"
       - dependency-name: "goreleaser/goreleaser-action"
 
-  # Automatically propose PRs for Go module dependencies
-  - package-ecosystem: gomod
-    directory: "/"
-    schedule:
-      # Check for new versions weekly
-      interval: weekly
-    groups:
-      go-updates:
-        patterns: ["*"]
-    labels:
-      - automation
-      - go-update
-    commit-message:
-      # Prefix all commit messages with "go: "
-      prefix: "go"
+  # NOTE: gomod updates are deliberately not enabled. The Nix build pins
+  # `vendorHash` in nix/default.nix, which must be recomputed by hand for every
+  # dependency change, so Dependabot Go PRs always fail CI.

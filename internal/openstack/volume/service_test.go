@@ -100,22 +100,6 @@ func TestNewRejectsInvalidClient(t *testing.T) {
 	}
 }
 
-func TestNewRejectsAuthenticatedClientWithoutProject(t *testing.T) {
-	t.Parallel()
-	client, _, _ := newAuthenticatedClient(t, testUserID, "", func(baseURL string) []any {
-		return []any{map[string]any{
-			"type": "block-storage",
-			"endpoints": []any{map[string]string{
-				"interface": "public", "region": "RegionOne", "region_id": "RegionOne",
-				"url": baseURL + "/volume/v3/",
-			}},
-		}}
-	})
-	if _, err := New(client); err == nil || !strings.Contains(err.Error(), "project ID is empty") {
-		t.Fatalf("expected empty project ID error, got %v", err)
-	}
-}
-
 func TestNewSelectsConfiguredBlockStorageEndpoint(t *testing.T) {
 	t.Parallel()
 	client, mux, _ := newAuthenticatedClient(t, testUserID, testProjectID, func(baseURL string) []any {

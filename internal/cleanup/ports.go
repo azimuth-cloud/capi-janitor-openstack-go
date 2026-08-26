@@ -65,9 +65,9 @@ type VolumeService interface {
 }
 
 // ApplicationCredentialService deletes the exact application credential ID
-// from the selected cloud configuration. It follows the common delete
-// contract and returns ErrApplicationCredentialForbidden only when Keystone
-// rejects application credential self-deletion with HTTP 403.
+// provided by its caller. Only HTTP 204 or an exact target DELETE 404 confirms
+// completion. It returns ErrApplicationCredentialForbidden only when the
+// target DELETE request returns HTTP 403.
 type ApplicationCredentialService interface {
 	DeleteApplicationCredential(context.Context, string) error
 }

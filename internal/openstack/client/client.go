@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -20,13 +21,13 @@ import (
 )
 
 const (
-	defaultCloudName = "openstack"
-	requestTimeout   = 30 * time.Second
-	userAgent        = "capi-janitor-openstack-go"
+	defaultCloudName   = "openstack"
+	httpRequestTimeout = 60 * time.Second
+	userAgent          = "capi-janitor-openstack-go"
 )
 
 // UnsupportedAuthTypeError is returned when a cloud uses an authentication
-// method outside the two methods supported by the Janitor.
+// method outside the application credential method supported by the Janitor.
 type UnsupportedAuthTypeError struct {
 	AuthType string
 }
@@ -58,25 +59,24 @@ type Client struct {
 }
 
 // NewClient parses an in-memory clouds.yaml entry and authenticates with
-// Gophercloud. Both v3 application credential and v3 password authentication
-// are supported. Other authentication methods fail closed.
-func NewClient(ctx context.Context, opts Options) (*Client, error) {
-	loader, err := newYAMLLoader(opts.CloudsYAML)
+// Gophercloud using an explicit v3 application credential.
+func NewClient(ctx context.Context, options Options) (*Client, error) {
+	cloudLoader, err := newYAMLLoader(options.CloudsYAML)
 	if err != nil {
 		return nil, err
 	}
 
-	cloudName := opts.CloudName
+	cloudName := options.CloudName
 	if cloudName == "" {
 		cloudName = defaultCloudName
 	}
 
-	clientOpts := &clientconfig.ClientOpts{
+	clientOptions := &clientconfig.ClientOpts{
 		Cloud:     cloudName,
 		EnvPrefix: "CAPI_JANITOR_OPENSTACK_",
-		YAMLOpts:  loader,
+		YAMLOpts:  cloudLoader,
 	}
-	cloud, err := clientconfig.GetCloudFromYAML(clientOpts)
+	cloud, err := clientconfig.GetCloudFromYAML(clientOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -84,34 +84,37 @@ func NewClient(ctx context.Context, opts Options) (*Client, error) {
 		return nil, fmt.Errorf("cloud %q has no auth configuration", cloudName)
 	}
 
-	authType, err := resolveAuthType(cloud)
-	if err != nil {
+	if err := requireApplicationCredential(cloud); err != nil {
 		return nil, err
 	}
-	cloud.AuthType = authType
 	cloud.AuthInfo.AllowReauth = true
-	loader.clouds[cloudName] = *cloud
+	cloudLoader.clouds[cloudName] = *cloud
 
-	httpClient, err := newHTTPClient(cloud, opts.CACert)
+	httpClient, err := newHTTPClient(cloud, options.CACert)
 	if err != nil {
 		return nil, err
 	}
 
-	authOpts, err := clientconfig.AuthOptions(clientOpts)
+	configuredAuth, err := clientconfig.AuthOptions(clientOptions)
 	if err != nil {
 		return nil, err
 	}
-	authOpts.AllowReauth = true
+	credentialAuth := gophercloud.AuthOptions{
+		IdentityEndpoint:            configuredAuth.IdentityEndpoint,
+		ApplicationCredentialID:     cloud.AuthInfo.ApplicationCredentialID,
+		ApplicationCredentialSecret: cloud.AuthInfo.ApplicationCredentialSecret,
+		AllowReauth:                 true,
+	}
 
-	provider, err := openstack.NewClient(authOpts.IdentityEndpoint)
+	providerClient, err := openstack.NewClient(credentialAuth.IdentityEndpoint)
 	if err != nil {
 		return nil, err
 	}
-	provider.HTTPClient = *httpClient
-	provider.UserAgent.Prepend(userAgent)
+	providerClient.HTTPClient = *httpClient
+	providerClient.UserAgent.Prepend(userAgent)
 
 	client := &Client{
-		provider: provider,
+		provider: providerClient,
 		endpointOpts: gophercloud.EndpointOpts{
 			Region:       cloud.RegionName,
 			Availability: clientconfig.GetEndpointType(cloud.EndpointType),
@@ -119,51 +122,26 @@ func NewClient(ctx context.Context, opts Options) (*Client, error) {
 		applicationCredentialID: cloud.AuthInfo.ApplicationCredentialID,
 	}
 
-	if err := openstack.Authenticate(ctx, provider, *authOpts); err != nil {
-		if authType == clientconfig.AuthV3ApplicationCredential && gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
-			return client, nil
-		}
+	if err := openstack.Authenticate(ctx, providerClient, credentialAuth); err != nil {
 		return nil, err
 	}
 
-	if err := client.loadIdentity(ctx); err != nil {
-		if gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
-			return client, nil
-		}
+	if err := client.loadTokenAndCatalog(ctx); err != nil {
 		return nil, err
+	}
+	if client.userID == "" {
+		return nil, errors.New("authenticated user ID is empty")
+	}
+	if client.projectID == "" {
+		return nil, errors.New("authenticated project ID is empty")
 	}
 
 	return client, nil
 }
 
-// ApplicationCredentialID returns the application credential ID from the
-// selected cloud entry without authenticating. Password-authenticated entries
-// return an empty ID.
-func ApplicationCredentialID(cloudsYAML, cloudName string) (string, error) {
-	loader, err := newYAMLLoader(cloudsYAML)
-	if err != nil {
-		return "", err
-	}
-	if cloudName == "" {
-		cloudName = defaultCloudName
-	}
-	cloud, err := clientconfig.GetCloudFromYAML(&clientconfig.ClientOpts{
-		Cloud:     cloudName,
-		EnvPrefix: "CAPI_JANITOR_OPENSTACK_",
-		YAMLOpts:  loader,
-	})
-	if err != nil {
-		return "", err
-	}
-	if cloud.AuthInfo == nil {
-		return "", nil
-	}
-	return cloud.AuthInfo.ApplicationCredentialID, nil
-}
-
-func (c *Client) loadIdentity(ctx context.Context) error {
-	if result := c.provider.GetAuthResult(); result != nil {
-		if extractor, ok := result.(interface {
+func (c *Client) loadTokenAndCatalog(ctx context.Context) error {
+	if authResult := c.provider.GetAuthResult(); authResult != nil {
+		if extractor, ok := authResult.(interface {
 			ExtractUser() (*tokens.User, error)
 		}); ok {
 			user, err := extractor.ExtractUser()
@@ -174,7 +152,7 @@ func (c *Client) loadIdentity(ctx context.Context) error {
 				c.userID = user.ID
 			}
 		}
-		if extractor, ok := result.(interface {
+		if extractor, ok := authResult.(interface {
 			ExtractProject() (*tokens.Project, error)
 		}); ok {
 			project, err := extractor.ExtractProject()
@@ -187,27 +165,27 @@ func (c *Client) loadIdentity(ctx context.Context) error {
 		}
 	}
 
-	identity, err := openstack.NewIdentityV3(c.provider, gophercloud.EndpointOpts{})
+	identityService, err := openstack.NewIdentityV3(c.provider, gophercloud.EndpointOpts{})
 	if err != nil {
 		return err
 	}
-	var entries []tokens.CatalogEntry
-	if err := catalog.List(identity).EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
+	var catalogEntries []tokens.CatalogEntry
+	if err := catalog.List(identityService).EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
 		pageEntries, err := catalog.ExtractServiceCatalog(page)
 		if err != nil {
 			return false, err
 		}
-		entries = append(entries, pageEntries...)
+		catalogEntries = append(catalogEntries, pageEntries...)
 		return true, nil
 	}); err != nil {
 		return err
 	}
 
-	serviceCatalog := &tokens.ServiceCatalog{Entries: entries}
-	c.provider.EndpointLocator = func(opts gophercloud.EndpointOpts) (string, error) {
-		return openstack.V3Endpoint(context.TODO(), c.provider, serviceCatalog, opts)
+	serviceCatalog := &tokens.ServiceCatalog{Entries: catalogEntries}
+	c.provider.EndpointLocator = func(endpointOptions gophercloud.EndpointOpts) (string, error) {
+		return openstack.V3Endpoint(context.TODO(), c.provider, serviceCatalog, endpointOptions)
 	}
-	c.authenticated = len(entries) > 0
+	c.authenticated = true
 	return nil
 }
 
@@ -225,7 +203,7 @@ func (c *Client) UserID() string {
 	return c.userID
 }
 
-// ProjectID returns the project ID carried by the current token when present.
+// ProjectID returns the project ID carried by the current token.
 func (c *Client) ProjectID() string {
 	if c == nil {
 		return ""
@@ -234,7 +212,6 @@ func (c *Client) ProjectID() string {
 }
 
 // ApplicationCredentialID returns the exact ID from the selected cloud entry.
-// It is empty for password authentication.
 func (c *Client) ApplicationCredentialID() string {
 	if c == nil {
 		return ""
@@ -258,23 +235,6 @@ func (c *Client) EndpointOpts() gophercloud.EndpointOpts {
 		return gophercloud.EndpointOpts{}
 	}
 	return c.endpointOpts
-}
-
-// Endpoint finds a service endpoint for the configured region and interface.
-// It remains only for the legacy manual HTTP code and will be removed with it.
-func (c *Client) Endpoint(serviceType string) (string, error) {
-	if c == nil || c.provider == nil || c.provider.EndpointLocator == nil {
-		return "", &gophercloud.ErrEndpointNotFound{}
-	}
-	opts := c.endpointOpts
-	opts.ApplyDefaults(serviceType)
-	return c.provider.EndpointLocator(opts)
-}
-
-// Request sends an authenticated HTTP request. It remains only for the legacy
-// manual HTTP code. Resource services use typed Gophercloud packages instead.
-func (c *Client) Request(ctx context.Context, method, url string, opts *gophercloud.RequestOpts) (*http.Response, error) {
-	return c.provider.Request(ctx, method, url, opts)
 }
 
 type yamlLoader struct {
@@ -301,24 +261,21 @@ func (*yamlLoader) LoadPublicCloudsYAML() (map[string]clientconfig.Cloud, error)
 	return nil, nil
 }
 
-func resolveAuthType(cloud *clientconfig.Cloud) (clientconfig.AuthType, error) {
+func requireApplicationCredential(cloud *clientconfig.Cloud) error {
 	if cloud.AuthInfo == nil {
-		return "", &UnsupportedAuthTypeError{AuthType: string(cloud.AuthType)}
+		return &UnsupportedAuthTypeError{AuthType: string(cloud.AuthType)}
 	}
 
-	switch cloud.AuthType {
-	case clientconfig.AuthV3ApplicationCredential, clientconfig.AuthV3Password:
-		return cloud.AuthType, nil
-	case "", clientconfig.AuthPassword:
-		if cloud.AuthInfo.ApplicationCredentialID != "" || cloud.AuthInfo.ApplicationCredentialSecret != "" {
-			return clientconfig.AuthV3ApplicationCredential, nil
-		}
-		if cloud.AuthInfo.Username != "" || cloud.AuthInfo.UserID != "" {
-			return clientconfig.AuthV3Password, nil
-		}
+	if cloud.AuthType != clientconfig.AuthV3ApplicationCredential {
+		return &UnsupportedAuthTypeError{AuthType: string(cloud.AuthType)}
 	}
-
-	return "", &UnsupportedAuthTypeError{AuthType: string(cloud.AuthType)}
+	if cloud.AuthInfo.ApplicationCredentialID == "" {
+		return errors.New("application credential ID is empty")
+	}
+	if cloud.AuthInfo.ApplicationCredentialSecret == "" {
+		return errors.New("application credential secret is empty")
+	}
+	return nil
 }
 
 func newHTTPClient(cloud *clientconfig.Cloud, caCert string) (*http.Client, error) {
@@ -339,5 +296,5 @@ func newHTTPClient(cloud *clientconfig.Cloud, caCert string) (*http.Client, erro
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = tlsConfig
-	return &http.Client{Transport: transport, Timeout: requestTimeout}, nil
+	return &http.Client{Transport: transport, Timeout: httpRequestTimeout}, nil
 }

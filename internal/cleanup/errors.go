@@ -9,8 +9,8 @@ var (
 	// controller's retry behaviour.
 	ErrDeletePending = errors.New("OpenStack resource deletion is pending")
 
-	// ErrApplicationCredentialForbidden marks the narrow 403 response allowed
-	// by the application credential self-deletion policy. Callers must not use
-	// this classification for any other OpenStack resource.
+	// ErrApplicationCredentialForbidden marks a 403 response from the exact
+	// application credential DELETE request. Callers must not use this
+	// classification for another OpenStack resource.
 	ErrApplicationCredentialForbidden = errors.New("application credential deletion is forbidden")
 )

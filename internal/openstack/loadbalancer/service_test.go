@@ -20,7 +20,7 @@ import (
 
 const loadBalancersPath = "/octavia/v2.0/lbaas/loadbalancers"
 
-func TestListLoadBalancersListsEveryPageWithinProject(t *testing.T) {
+func TestListLoadBalancersReturnsProtectionFieldsFromEveryPageInSelectedProject(t *testing.T) {
 	t.Parallel()
 
 	var serverURL string
@@ -39,8 +39,20 @@ func TestListLoadBalancersListsEveryPageWithinProject(t *testing.T) {
 		case "":
 			writeJSON(t, w, map[string]any{
 				"loadbalancers": []any{
-					map[string]any{"id": "lb-1", "name": "first", "project_id": "project-1"},
-					map[string]any{"id": "other-1", "name": "foreign", "project_id": "project-2"},
+					map[string]any{
+						"id":          "lb-1",
+						"name":        "first",
+						"project_id":  "project-1",
+						"tags":        []string{"kube_service_cluster-1_default_api"},
+						"vip_port_id": "vip-port-1",
+					},
+					map[string]any{
+						"id":          "other-1",
+						"name":        "foreign",
+						"project_id":  "project-2",
+						"tags":        []string{},
+						"vip_port_id": "foreign-vip-port",
+					},
 				},
 				"loadbalancers_links": []any{map[string]any{
 					"rel":  "next",
@@ -50,7 +62,13 @@ func TestListLoadBalancersListsEveryPageWithinProject(t *testing.T) {
 		case "lb-1":
 			writeJSON(t, w, map[string]any{
 				"loadbalancers": []any{
-					map[string]any{"id": "lb-2", "name": "second", "project_id": "project-1"},
+					map[string]any{
+						"id":          "lb-2",
+						"name":        "second",
+						"project_id":  "project-1",
+						"tags":        []string{"tag-1", "tag-2"},
+						"vip_port_id": "",
+					},
 				},
 				"loadbalancers_links": []any{},
 			})
@@ -65,8 +83,18 @@ func TestListLoadBalancersListsEveryPageWithinProject(t *testing.T) {
 		t.Fatalf("listing loadbalancers: %v", err)
 	}
 	want := []cleanup.LoadBalancer{
-		{ID: "lb-1", Name: "first"},
-		{ID: "lb-2", Name: "second"},
+		{
+			ID:        "lb-1",
+			Name:      "first",
+			Tags:      []string{"kube_service_cluster-1_default_api"},
+			VIPPortID: "vip-port-1",
+		},
+		{
+			ID:        "lb-2",
+			Name:      "second",
+			Tags:      []string{"tag-1", "tag-2"},
+			VIPPortID: "",
+		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %#v, got %#v", want, got)
@@ -83,7 +111,12 @@ func TestListLoadBalancersRejectsMissingProjectIdentity(t *testing.T) {
 	service := newService(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		writeJSON(t, w, map[string]any{
-			"loadbalancers":       []any{map[string]any{"id": "lb-unknown", "name": "unknown-project"}},
+			"loadbalancers": []any{map[string]any{
+				"id":          "lb-unknown",
+				"name":        "unknown-project",
+				"tags":        []string{},
+				"vip_port_id": "vip-port-1",
+			}},
 			"loadbalancers_links": []any{},
 		})
 	}, &serverURL)
@@ -94,6 +127,102 @@ func TestListLoadBalancersRejectsMissingProjectIdentity(t *testing.T) {
 	}
 	if items != nil {
 		t.Fatalf("expected invalid inventory to be discarded, got %#v", items)
+	}
+}
+
+func TestListLoadBalancersRejectsMissingOrInvalidProtectionFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		responseFields map[string]any
+		wantField      string
+	}{
+		{
+			name: "missing tags",
+			responseFields: map[string]any{
+				"vip_port_id": "vip-port-1",
+			},
+			wantField: "tags",
+		},
+		{
+			name: "null tags",
+			responseFields: map[string]any{
+				"tags":        nil,
+				"vip_port_id": "vip-port-1",
+			},
+			wantField: "tags",
+		},
+		{
+			name: "string tags",
+			responseFields: map[string]any{
+				"tags":        "tag-1",
+				"vip_port_id": "vip-port-1",
+			},
+			wantField: "tags",
+		},
+		{
+			name: "non string tag",
+			responseFields: map[string]any{
+				"tags":        []any{"tag-1", 42},
+				"vip_port_id": "vip-port-1",
+			},
+			wantField: "tags",
+		},
+		{
+			name: "missing VIP port ID",
+			responseFields: map[string]any{
+				"tags": []string{},
+			},
+			wantField: "vip_port_id",
+		},
+		{
+			name: "null VIP port ID",
+			responseFields: map[string]any{
+				"tags":        []string{},
+				"vip_port_id": nil,
+			},
+			wantField: "vip_port_id",
+		},
+		{
+			name: "numeric VIP port ID",
+			responseFields: map[string]any{
+				"tags":        []string{},
+				"vip_port_id": 42,
+			},
+			wantField: "vip_port_id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var serverURL string
+			service := newService(t, func(w http.ResponseWriter, _ *http.Request) {
+				loadBalancerResponse := map[string]any{
+					"id":         "lb-1",
+					"name":       "first",
+					"project_id": "project-1",
+				}
+				for key, value := range tt.responseFields {
+					loadBalancerResponse[key] = value
+				}
+				w.Header().Set("Content-Type", "application/json")
+				writeJSON(t, w, map[string]any{"loadbalancers": []any{loadBalancerResponse}})
+			}, &serverURL)
+
+			got, err := service.ListLoadBalancers(context.Background())
+			if err == nil {
+				t.Fatal("expected missing or invalid protection field to fail inventory")
+			}
+			if got != nil {
+				t.Fatalf("expected invalid inventory to be discarded, got %#v", got)
+			}
+			if !strings.Contains(err.Error(), tt.wantField) {
+				t.Fatalf("expected %s context, got %v", tt.wantField, err)
+			}
+		})
 	}
 }
 
@@ -132,7 +261,11 @@ func TestListLoadBalancersReturnsNoPartialInventory(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				writeJSON(t, w, map[string]any{
 					"loadbalancers": []any{map[string]any{
-						"id": "lb-1", "name": "first", "project_id": "project-1",
+						"id":          "lb-1",
+						"name":        "first",
+						"project_id":  "project-1",
+						"tags":        []string{},
+						"vip_port_id": "vip-port-1",
 					}},
 					"loadbalancers_links": []any{map[string]any{
 						"rel":  "next",

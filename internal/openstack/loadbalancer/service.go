@@ -9,6 +9,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 	"github.com/gophercloud/gophercloud/v2/pagination"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/cleanup"
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack/apierrors"
@@ -180,9 +181,14 @@ func (s *Service) DeleteLoadBalancer(ctx context.Context, id string) error {
 		return errors.New("deleting load balancer: ID is empty")
 	}
 
+	logger := log.FromContext(ctx).WithValues("loadBalancerID", id)
+	logger.Info("Deleting load balancer")
 	err := apierrors.ClassifyDelete(loadbalancers.Delete(ctx, s.client, id, loadbalancers.DeleteOpts{
 		Cascade: true,
 	}).ExtractErr())
+	if errors.Is(err, cleanup.ErrDeletePending) {
+		logger.Info("Load balancer deletion is still pending")
+	}
 	if err != nil {
 		return fmt.Errorf("deleting load balancer %q: %w", id, err)
 	}

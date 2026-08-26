@@ -2,8 +2,13 @@ package openstack
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/go-logr/logr"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/cleanup"
+	openstackclient "github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack/client"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack/loadbalancer"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack/network"
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack/volume"
 )
 
 // PurgeOptions holds parameters for cleaning up OpenStack resources
@@ -17,52 +22,59 @@ type PurgeOptions struct {
 	CACert string
 	// ClusterName is the CAPI cluster name used to identify owned resources.
 	ClusterName string
-	// IncludeVolumes controls whether Cinder volumes and snapshots are deleted.
-	IncludeVolumes bool
-	// IncludeAppcred controls whether the OpenStack application credential is deleted.
-	IncludeAppcred bool
-	// Logger receives structured log messages during cleanup.
-	Logger logr.Logger
+	// DeleteVolumes controls whether Cinder volumes and snapshots are deleted.
+	DeleteVolumes bool
 }
 
-// PurgeResources removes all OpenStack resources (FIPs, load balancers,
-// security groups, volumes, snapshots, and optionally the application
-// credential) created by OCCM/CSI for the given cluster.
-func PurgeResources(ctx context.Context, opts PurgeOptions) error {
-	session, err := Authenticate(ctx, opts.CloudsYAML, opts.CloudName, opts.CACert)
+// PurgeResources removes the OpenStack resources created by OCCM and CSI for
+// the given cluster. Application credential cleanup is a separate phase.
+func PurgeResources(ctx context.Context, options PurgeOptions) error {
+	cloudClient, err := openstackclient.NewClient(ctx, openstackclient.Options{
+		CloudsYAML: options.CloudsYAML,
+		CloudName:  options.CloudName,
+		CACert:     options.CACert,
+	})
+	if err != nil {
+		return fmt.Errorf("creating OpenStack client: %w", err)
+	}
+
+	networkService, err := network.New(cloudClient)
+	if err != nil {
+		return err
+	}
+	loadBalancerService, err := loadbalancer.New(cloudClient)
 	if err != nil {
 		return err
 	}
 
-	if !session.IsAuthenticated() {
-		if opts.IncludeAppcred {
-			opts.Logger.Info("application credential has been deleted, skipping cleanup")
-			return nil
-		}
-		return &AuthenticationError{UserID: session.UserID()}
+	resourceServices := cleanup.Services{
+		FloatingIPs:    networkService,
+		LoadBalancers:  loadBalancerService,
+		SecurityGroups: networkService,
 	}
 
-	if err := session.DeleteFloatingIPs(ctx, opts.Logger, opts.ClusterName); err != nil {
-		return err
-	}
-	if err := session.DeleteLoadBalancers(ctx, opts.Logger, opts.ClusterName); err != nil {
-		return err
-	}
-	if err := session.DeleteSecurityGroups(ctx, opts.Logger, opts.ClusterName); err != nil {
-		return err
-	}
-	if opts.IncludeVolumes {
-		if err := session.DeleteSnapshots(ctx, opts.Logger, opts.ClusterName); err != nil {
+	if options.DeleteVolumes {
+		volumeService, err := volume.New(cloudClient)
+		if err != nil {
 			return err
 		}
-		if err := session.DeleteVolumes(ctx, opts.Logger, opts.ClusterName); err != nil {
-			return err
-		}
+		resourceServices.Snapshots = volumeService
+		resourceServices.Volumes = volumeService
 	}
-	if opts.IncludeAppcred {
-		if err := session.DeleteAppCredential(ctx, opts.Logger, opts.CloudsYAML, opts.CloudName); err != nil {
-			return err
-		}
+
+	cleanupResult, err := cleanup.NewRunner(resourceServices).Run(ctx, cleanup.Request{
+		Scope:  cleanup.Scope{ClusterName: options.ClusterName},
+		Policy: cleanup.Policy{DeleteVolumes: options.DeleteVolumes},
+	})
+	if err != nil {
+		return err
 	}
+	if cleanupResult.Outcome == cleanup.OutcomeWaiting {
+		return cleanup.ErrDeletePending
+	}
+	if cleanupResult.Outcome != cleanup.OutcomeComplete {
+		return fmt.Errorf("cleanup returned unexpected outcome %q", cleanupResult.Outcome)
+	}
+
 	return nil
 }

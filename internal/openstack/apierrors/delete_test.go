@@ -69,9 +69,10 @@ func TestClassifyApplicationCredentialDelete(t *testing.T) {
 		wantNil    bool
 		want       error
 	}{
-		{name: "OK is successful", statusCode: http.StatusOK, wantNil: true},
+		{name: "no content is successful", statusCode: http.StatusNoContent, wantNil: true},
 		{name: "not found is idempotent", statusCode: http.StatusNotFound, wantNil: true},
-		{name: "bad request is pending", statusCode: http.StatusBadRequest, want: cleanup.ErrDeletePending},
+		{name: "unexpected OK is rejected", statusCode: http.StatusOK},
+		{name: "bad request is unclassified", statusCode: http.StatusBadRequest},
 		{name: "forbidden is credential-specific", statusCode: http.StatusForbidden, want: cleanup.ErrApplicationCredentialForbidden},
 		{name: "server error is unclassified", statusCode: http.StatusInternalServerError},
 	}

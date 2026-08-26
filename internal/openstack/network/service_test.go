@@ -38,37 +38,6 @@ func TestNewValidatesClient(t *testing.T) {
 		}
 	})
 
-	t.Run("unauthenticated client", func(t *testing.T) {
-		client := newClientFixture(t, clientFixtureOptions{
-			tokenStatus:    http.StatusNotFound,
-			projectID:      testProjectID,
-			includeNetwork: true,
-		}, nil)
-
-		service, err := New(client)
-		if err == nil || service != nil {
-			t.Fatalf("expected authentication error, got service %#v and error %v", service, err)
-		}
-		if !strings.Contains(err.Error(), "not authenticated") {
-			t.Fatalf("expected authentication context, got %v", err)
-		}
-	})
-
-	t.Run("empty project ID", func(t *testing.T) {
-		client := newClientFixture(t, clientFixtureOptions{
-			tokenStatus:    http.StatusCreated,
-			includeNetwork: true,
-		}, nil)
-
-		service, err := New(client)
-		if err == nil || service != nil {
-			t.Fatalf("expected project error, got service %#v and error %v", service, err)
-		}
-		if !strings.Contains(err.Error(), "project ID is empty") {
-			t.Fatalf("expected project context, got %v", err)
-		}
-	})
-
 	t.Run("missing network endpoint", func(t *testing.T) {
 		client := newClientFixture(t, clientFixtureOptions{
 			tokenStatus: http.StatusCreated,

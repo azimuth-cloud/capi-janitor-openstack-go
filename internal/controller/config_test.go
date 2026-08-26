@@ -88,32 +88,32 @@ func captureCleanupOptions(t *testing.T, defaultPolicy string, clusterOptions ..
 // Scenario: Global policy "delete" → volumes included in the purge
 func TestReconcile_VolumesPolicy_IncludesVolumes_WhenDelete(t *testing.T) {
 	options := captureCleanupOptions(t, controller.PolicyDelete)
-	if !options.IncludeVolumes {
-		t.Error("expected IncludeVolumes=true for policy 'delete'")
+	if !options.DeleteVolumes {
+		t.Error("expected DeleteVolumes=true for policy 'delete'")
 	}
 }
 
 // Scenario: Global policy "keep" → volumes excluded from the purge
 func TestReconcile_VolumesPolicy_ExcludesVolumes_WhenKeep(t *testing.T) {
 	options := captureCleanupOptions(t, "keep")
-	if options.IncludeVolumes {
-		t.Error("expected IncludeVolumes=false for policy 'keep'")
+	if options.DeleteVolumes {
+		t.Error("expected DeleteVolumes=false for policy 'keep'")
 	}
 }
 
 // Scenario: Annotation "delete" on the cluster (overrides global keep)
 func TestReconcile_VolumesPolicy_AnnotationDeleteOverridesKeepGlobal(t *testing.T) {
 	options := captureCleanupOptions(t, "keep", withVolumePolicy(controller.PolicyDelete))
-	if !options.IncludeVolumes {
-		t.Error("expected IncludeVolumes=true when annotation 'delete' overrides global 'keep'")
+	if !options.DeleteVolumes {
+		t.Error("expected DeleteVolumes=true when annotation 'delete' overrides global 'keep'")
 	}
 }
 
 // Scenario: Annotation "keep" on the cluster (overrides global delete)
 func TestReconcile_VolumesPolicy_AnnotationKeepOverridesDeleteGlobal(t *testing.T) {
 	options := captureCleanupOptions(t, controller.PolicyDelete, withVolumePolicy("keep"))
-	if options.IncludeVolumes {
-		t.Error("expected IncludeVolumes=false when annotation 'keep' overrides global 'delete'")
+	if options.DeleteVolumes {
+		t.Error("expected DeleteVolumes=false when annotation 'keep' overrides global 'delete'")
 	}
 }
 

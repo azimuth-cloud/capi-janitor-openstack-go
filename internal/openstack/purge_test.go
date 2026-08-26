@@ -3,324 +3,340 @@ package openstack_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"slices"
 	"sync"
 	"testing"
 
-	"github.com/go-logr/logr"
-
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/cleanup"
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack"
 )
 
-// purgeTestServer is a single mock OpenStack server that advertises every
-// service PurgeResources touches (network, load-balancer, volumev3, identity)
-// from one self-referential catalog, so PurgeResources can run end-to-end
-// against a single httptest.Server.
-type purgeTestServer struct {
-	*httptest.Server
-	mu sync.Mutex
+type cleanupFixture struct {
+	server *httptest.Server
 
-	tokenStatus int // default http.StatusCreated; set 404 to simulate a deleted appcred
-
-	fipList  []fipRecord
-	lbList   []lbRecord
-	sgList   []sgRecord
-	volList  []cinderVolumeRecord
-	snapList []cinderVolumeRecord
-
-	fipListStatus int // non-zero overrides the GET /v2.0/floatingips response status
-	volListStatus int // non-zero overrides the GET /volumes/detail response status
-
-	fipListCalls, lbListCalls, sgListCalls, volListCalls, snapListCalls, appcredDeleteCalls int
-	deletedAppcredID                                                                        string
+	mu               sync.Mutex
+	networkInCatalog bool
+	octaviaInCatalog bool
+	cinderInCatalog  bool
+	floatingIPs      []map[string]any
+	loadBalancers    []map[string]any
+	securityGroups   []map[string]any
+	snapshots        []map[string]any
+	volumes          []map[string]any
+	requestLog       []string
+	deletePaths      []string
 }
 
-func newPurgeTestServer(t *testing.T) *purgeTestServer {
+func newCleanupFixture(t *testing.T) *cleanupFixture {
 	t.Helper()
-	srv := &purgeTestServer{tokenStatus: http.StatusCreated}
+
+	fixture := &cleanupFixture{
+		networkInCatalog: true,
+		octaviaInCatalog: true,
+		cinderInCatalog:  true,
+		floatingIPs:      []map[string]any{},
+		loadBalancers:    []map[string]any{},
+		securityGroups:   []map[string]any{},
+		snapshots:        []map[string]any{},
+		volumes:          []map[string]any{},
+	}
 	mux := http.NewServeMux()
+	fixture.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fixture.mu.Lock()
+		fixture.requestLog = append(fixture.requestLog, r.Method+" "+r.URL.Path)
+		fixture.mu.Unlock()
+		mux.ServeHTTP(w, r)
+	}))
+	t.Cleanup(fixture.server.Close)
 
-	mux.HandleFunc("/v3/auth/tokens", func(w http.ResponseWriter, r *http.Request) {
-		srv.mu.Lock()
-		status := srv.tokenStatus
-		srv.mu.Unlock()
-		if status >= 400 {
-			w.WriteHeader(status)
-			return
-		}
-		w.Header().Set("X-Subject-Token", "purge-token")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"token": map[string]any{"user": map[string]any{"id": "purge-user"}},
-		})
-	})
-
-	mux.HandleFunc("/v3/auth/catalog", func(w http.ResponseWriter, r *http.Request) {
-		selfURL := "http://" + r.Host
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"catalog": []any{
-				map[string]any{"type": "network", "endpoints": []any{
-					map[string]any{"interface": "public", "region_id": "RegionOne", "url": selfURL},
-				}},
-				map[string]any{"type": "load-balancer", "endpoints": []any{
-					map[string]any{"interface": "public", "region_id": "RegionOne", "url": selfURL},
-				}},
-				map[string]any{"type": "volumev3", "endpoints": []any{
-					map[string]any{"interface": "public", "region_id": "RegionOne", "url": selfURL},
-				}},
-				map[string]any{"type": "identity", "endpoints": []any{
-					map[string]any{"interface": "public", "region_id": "RegionOne", "url": selfURL},
-				}},
+	mux.HandleFunc("/v3/auth/tokens", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Subject-Token", "token-1")
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"token": map[string]any{
+				"user":    map[string]any{"id": "user-1"},
+				"project": map[string]any{"id": "project-1"},
+				"catalog": []any{},
 			},
 		})
 	})
+	mux.HandleFunc("/v3/auth/catalog", func(w http.ResponseWriter, _ *http.Request) {
+		fixture.mu.Lock()
+		networkInCatalog := fixture.networkInCatalog
+		octaviaInCatalog := fixture.octaviaInCatalog
+		cinderInCatalog := fixture.cinderInCatalog
+		fixture.mu.Unlock()
 
-	mux.HandleFunc("/v2.0/floatingips", func(w http.ResponseWriter, r *http.Request) {
-		srv.mu.Lock()
-		srv.fipListCalls++
-		status := srv.fipListStatus
-		list := srv.fipList
-		srv.mu.Unlock()
-		if status != 0 {
-			w.WriteHeader(status)
-			return
+		catalog := make([]any, 0, 3)
+		if networkInCatalog {
+			catalog = append(catalog, newCatalogEntry("network", fixture.server.URL+"/network/"))
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"floatingips": list})
-	})
-	mux.HandleFunc("/v2.0/floatingips/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	mux.HandleFunc("/v2/lbaas/loadbalancers", func(w http.ResponseWriter, r *http.Request) {
-		srv.mu.Lock()
-		srv.lbListCalls++
-		list := srv.lbList
-		srv.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"loadbalancers": list})
-	})
-	mux.HandleFunc("/v2/lbaas/loadbalancers/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	mux.HandleFunc("/v2.0/security-groups", func(w http.ResponseWriter, r *http.Request) {
-		srv.mu.Lock()
-		srv.sgListCalls++
-		list := srv.sgList
-		srv.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"security_groups": list})
-	})
-	mux.HandleFunc("/v2.0/security-groups/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	mux.HandleFunc("/snapshots/detail", func(w http.ResponseWriter, r *http.Request) {
-		srv.mu.Lock()
-		srv.snapListCalls++
-		list := srv.snapList
-		srv.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"snapshots": list})
-	})
-	mux.HandleFunc("/snapshots/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	mux.HandleFunc("/volumes/detail", func(w http.ResponseWriter, r *http.Request) {
-		srv.mu.Lock()
-		srv.volListCalls++
-		status := srv.volListStatus
-		list := srv.volList
-		srv.mu.Unlock()
-		if status != 0 {
-			w.WriteHeader(status)
-			return
+		if octaviaInCatalog {
+			catalog = append(catalog, newCatalogEntry("load-balancer", fixture.server.URL+"/octavia/v2.0/"))
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"volumes": list})
-	})
-	mux.HandleFunc("/volumes/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	mux.HandleFunc("/v3/users/", func(w http.ResponseWriter, r *http.Request) {
-		parts := strings.Split(r.URL.Path, "/application_credentials/")
-		srv.mu.Lock()
-		srv.appcredDeleteCalls++
-		if len(parts) == 2 {
-			srv.deletedAppcredID = parts[1]
+		if cinderInCatalog {
+			catalog = append(catalog, newCatalogEntry("volumev3", fixture.server.URL+"/cinder/v3/project-1/"))
 		}
-		srv.mu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(t, w, http.StatusOK, map[string]any{"catalog": catalog})
+	})
+	mux.HandleFunc("/network/", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"versions": []any{map[string]any{"id": "v2.0", "status": "CURRENT"}},
+		})
+	})
+	mux.HandleFunc("/cinder/", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"versions": []any{map[string]any{"id": "v3.0", "status": "CURRENT"}},
+		})
 	})
 
-	srv.Server = httptest.NewServer(mux)
-	t.Cleanup(srv.Server.Close)
-	return srv
+	mux.HandleFunc("/network/v2.0/floatingips", fixture.newListHandler(t, "floatingips", func() []map[string]any {
+		return fixture.floatingIPs
+	}))
+	mux.HandleFunc("/network/v2.0/floatingips/", fixture.handleDelete)
+	mux.HandleFunc("/network/v2.0/security-groups", fixture.newListHandler(t, "security_groups", func() []map[string]any {
+		return fixture.securityGroups
+	}))
+	mux.HandleFunc("/network/v2.0/security-groups/", fixture.handleDelete)
+	mux.HandleFunc("/octavia/v2.0/lbaas/loadbalancers", fixture.newListHandler(t, "loadbalancers", func() []map[string]any {
+		return fixture.loadBalancers
+	}))
+	mux.HandleFunc("/octavia/v2.0/lbaas/loadbalancers/", fixture.handleDelete)
+	mux.HandleFunc("/cinder/v3/project-1/snapshots/detail", fixture.newListHandler(t, "snapshots", func() []map[string]any {
+		return fixture.snapshots
+	}))
+	mux.HandleFunc("/cinder/v3/project-1/snapshots/", fixture.handleDelete)
+	mux.HandleFunc("/cinder/v3/project-1/volumes/detail", fixture.newListHandler(t, "volumes", func() []map[string]any {
+		return fixture.volumes
+	}))
+	mux.HandleFunc("/cinder/v3/project-1/volumes/", fixture.handleDelete)
+
+	return fixture
 }
 
-func buildPurgeCloudsYAML(authURL string) string {
-	authURL = identityV3URL(authURL)
-	return fmt.Sprintf(`
+func (f *cleanupFixture) newListHandler(
+	t *testing.T,
+	responseKey string,
+	getItems func() []map[string]any,
+) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET for %s inventory, got %s", responseKey, r.Method)
+		}
+		f.mu.Lock()
+		items := slices.Clone(getItems())
+		f.mu.Unlock()
+		writeJSON(t, w, http.StatusOK, map[string]any{responseKey: items})
+	}
+}
+
+func (f *cleanupFixture) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	f.mu.Lock()
+	f.deletePaths = append(f.deletePaths, r.URL.Path)
+	f.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *cleanupFixture) buildOptions() openstack.PurgeOptions {
+	return openstack.PurgeOptions{
+		CloudsYAML: fmt.Sprintf(`
 clouds:
   openstack:
     auth_type: v3applicationcredential
     auth:
-      auth_url: %s
-      application_credential_id: purge-appcred-id
-      application_credential_secret: purge-secret
-    interface: public
+      auth_url: %s/v3
+      application_credential_id: appcred-1
+      application_credential_secret: secret
     region_name: RegionOne
-`, authURL)
+    interface: public
+`, f.server.URL),
+		CloudName:   "openstack",
+		ClusterName: "demo",
+	}
 }
 
-func TestPurgeResources_AuthenticateError_Propagates(t *testing.T) {
-	err := openstack.PurgeResources(context.Background(), openstack.PurgeOptions{
-		CloudsYAML: "not: valid: yaml: :",
-		CloudName:  "openstack",
-		Logger:     logr.Discard(),
-	})
+func newCatalogEntry(serviceType, endpoint string) map[string]any {
+	return map[string]any{
+		"id":   serviceType,
+		"name": serviceType,
+		"type": serviceType,
+		"endpoints": []any{map[string]any{
+			"interface": "public",
+			"region_id": "RegionOne",
+			"url":       endpoint,
+		}},
+	}
+}
+
+func writeJSON(t *testing.T, w http.ResponseWriter, status int, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Errorf("encoding response: %v", err)
+	}
+}
+
+func TestPurgeResourcesUsesTypedServices(t *testing.T) {
+	fixture := newCleanupFixture(t)
+	options := fixture.buildOptions()
+
+	if err := openstack.PurgeResources(context.Background(), options); err != nil {
+		t.Fatalf("purging empty project: %v", err)
+	}
+
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.deletePaths) != 0 {
+		t.Fatalf("expected no deletion requests, got %v", fixture.deletePaths)
+	}
+	if !slices.Contains(fixture.requestLog, "GET /octavia/v2.0/lbaas/loadbalancers") {
+		t.Fatalf("expected typed Octavia inventory request, got %v", fixture.requestLog)
+	}
+	if !slices.Contains(fixture.requestLog, "GET /network/v2.0/floatingips") {
+		t.Fatalf("expected typed Neutron inventory request, got %v", fixture.requestLog)
+	}
+	if !slices.Contains(fixture.requestLog, "GET /network/v2.0/security-groups") {
+		t.Fatalf("expected typed security group inventory request, got %v", fixture.requestLog)
+	}
+	if slices.Contains(fixture.requestLog, "GET /cinder/v3/project-1/snapshots/detail") {
+		t.Fatalf("did not expect Cinder inventory when volume deletion is disabled: %v", fixture.requestLog)
+	}
+}
+
+func TestPurgeResourcesStopsAfterOnePhase(t *testing.T) {
+	fixture := newCleanupFixture(t)
+	fixture.floatingIPs = []map[string]any{
+		{
+			"id":          "fip-1",
+			"description": "Floating IP for Kubernetes external service default/web from cluster demo",
+			"project_id":  "project-1",
+			"port_id":     nil,
+		},
+	}
+
+	err := openstack.PurgeResources(context.Background(), fixture.buildOptions())
+	if !errors.Is(err, cleanup.ErrDeletePending) {
+		t.Fatalf("expected pending cleanup after floating IP deletion, got %v", err)
+	}
+
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	want := []string{"/network/v2.0/floatingips/fip-1"}
+	if !slices.Equal(fixture.deletePaths, want) {
+		t.Fatalf("expected one floating IP deletion, got %v", fixture.deletePaths)
+	}
+	if slices.Contains(fixture.requestLog, "GET /network/v2.0/security-groups") {
+		t.Fatalf("security group phase ran before floating IP verification: %v", fixture.requestLog)
+	}
+}
+
+func TestPurgeResourcesBlocksWithoutOctavia(t *testing.T) {
+	fixture := newCleanupFixture(t)
+	fixture.octaviaInCatalog = false
+	fixture.floatingIPs = []map[string]any{
+		{
+			"id":          "fip-1",
+			"description": "Floating IP for Kubernetes external service default/web from cluster demo",
+			"project_id":  "project-1",
+			"port_id":     nil,
+		},
+	}
+
+	err := openstack.PurgeResources(context.Background(), fixture.buildOptions())
 	if err == nil {
-		t.Fatal("expected error from Authenticate, got nil")
+		t.Fatal("expected missing Octavia endpoint to block cleanup")
+	}
+
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.deletePaths) != 0 {
+		t.Fatalf("expected no mutation when Octavia is unavailable, got %v", fixture.deletePaths)
 	}
 }
 
-func TestPurgeResources_Unauthenticated_IncludeAppcredTrue_ReturnsNilAndSkips(t *testing.T) {
-	srv := newPurgeTestServer(t)
-	srv.tokenStatus = http.StatusNotFound
+func TestPurgeResourcesKeepsSharedLoadBalancer(t *testing.T) {
+	fixture := newCleanupFixture(t)
+	fixture.loadBalancers = []map[string]any{
+		{
+			"id":          "lb-shared",
+			"name":        "kube_service_demo_default_web",
+			"project_id":  "project-1",
+			"vip_port_id": "vip-shared",
+			"tags": []any{
+				"kube_service_demo_default_web",
+				"kube_service_other_default_api",
+			},
+		},
+	}
+	fixture.floatingIPs = []map[string]any{
+		{
+			"id":          "fip-shared",
+			"description": "Floating IP for Kubernetes external service default/web from cluster demo",
+			"project_id":  "project-1",
+			"port_id":     "vip-shared",
+		},
+	}
 
-	err := openstack.PurgeResources(context.Background(), openstack.PurgeOptions{
-		CloudsYAML:     buildPurgeCloudsYAML(srv.URL),
-		CloudName:      "openstack",
-		IncludeAppcred: true,
-		Logger:         logr.Discard(),
-	})
-	if err != nil {
-		t.Fatalf("expected nil error when appcred already deleted, got: %v", err)
+	if err := openstack.PurgeResources(context.Background(), fixture.buildOptions()); err != nil {
+		t.Fatalf("purging project with shared load balancer: %v", err)
+	}
+
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.deletePaths) != 0 {
+		t.Fatalf("expected shared load balancer and floating IP to be preserved, got %v", fixture.deletePaths)
 	}
 }
 
-func TestPurgeResources_Unauthenticated_IncludeAppcredFalse_ReturnsAuthenticationError(t *testing.T) {
-	srv := newPurgeTestServer(t)
-	srv.tokenStatus = http.StatusNotFound
-
-	err := openstack.PurgeResources(context.Background(), openstack.PurgeOptions{
-		CloudsYAML:     buildPurgeCloudsYAML(srv.URL),
-		CloudName:      "openstack",
-		IncludeAppcred: false,
-		Logger:         logr.Discard(),
-	})
-	var target *openstack.AuthenticationError
-	if !errorAs(err, &target) {
-		t.Fatalf("expected *AuthenticationError, got %T: %v", err, err)
+func TestPurgeResourcesUsesCinderForVolumes(t *testing.T) {
+	withCinder := newCleanupFixture(t)
+	options := withCinder.buildOptions()
+	options.DeleteVolumes = true
+	if err := openstack.PurgeResources(context.Background(), options); err != nil {
+		t.Fatalf("cleanup with volume deletion: %v", err)
 	}
-}
+	withCinder.mu.Lock()
+	if !slices.Contains(withCinder.requestLog, "GET /cinder/v3/project-1/snapshots/detail") ||
+		!slices.Contains(withCinder.requestLog, "GET /cinder/v3/project-1/volumes/detail") {
+		t.Fatalf("expected typed Cinder inventory, got %v", withCinder.requestLog)
+	}
+	withCinder.mu.Unlock()
 
-func TestPurgeResources_DeleteFloatingIPsError_ShortCircuits(t *testing.T) {
-	srv := newPurgeTestServer(t)
-	srv.fipListStatus = http.StatusInternalServerError
+	fixture := newCleanupFixture(t)
+	fixture.cinderInCatalog = false
 
-	err := openstack.PurgeResources(context.Background(), openstack.PurgeOptions{
-		CloudsYAML:     buildPurgeCloudsYAML(srv.URL),
-		CloudName:      "openstack",
-		IncludeVolumes: true,
-		IncludeAppcred: true,
-		Logger:         logr.Discard(),
-	})
-	if err == nil {
-		t.Fatal("expected error from DeleteFloatingIPs, got nil")
+	withoutVolumes := fixture.buildOptions()
+	if err := openstack.PurgeResources(context.Background(), withoutVolumes); err != nil {
+		t.Fatalf("cleanup without volume deletion required Cinder: %v", err)
 	}
 
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	if srv.lbListCalls != 0 || srv.sgListCalls != 0 || srv.volListCalls != 0 || srv.snapListCalls != 0 || srv.appcredDeleteCalls != 0 {
-		t.Errorf("expected no further resource calls after FIP error, got lb=%d sg=%d vol=%d snap=%d appcred=%d",
-			srv.lbListCalls, srv.sgListCalls, srv.volListCalls, srv.snapListCalls, srv.appcredDeleteCalls)
+	missingCinder := newCleanupFixture(t)
+	missingCinder.cinderInCatalog = false
+	missingCinder.floatingIPs = []map[string]any{
+		{
+			"id":          "fip-1",
+			"description": "Floating IP for Kubernetes external service default/web from cluster demo",
+			"project_id":  "project-1",
+			"port_id":     nil,
+		},
 	}
-}
-
-func TestPurgeResources_DeleteVolumesError_ShortCircuits(t *testing.T) {
-	srv := newPurgeTestServer(t)
-	srv.volListStatus = http.StatusInternalServerError
-
-	err := openstack.PurgeResources(context.Background(), openstack.PurgeOptions{
-		CloudsYAML:     buildPurgeCloudsYAML(srv.URL),
-		CloudName:      "openstack",
-		IncludeVolumes: true,
-		IncludeAppcred: true,
-		Logger:         logr.Discard(),
-	})
-	if err == nil {
-		t.Fatal("expected error from DeleteVolumes, got nil")
+	withVolumes := missingCinder.buildOptions()
+	withVolumes.DeleteVolumes = true
+	if err := openstack.PurgeResources(context.Background(), withVolumes); err == nil {
+		t.Fatal("expected enabled volume cleanup to require Cinder")
 	}
-
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	if srv.appcredDeleteCalls != 0 {
-		t.Errorf("expected DeleteAppCredential not to be called after DeleteVolumes error, got %d calls", srv.appcredDeleteCalls)
-	}
-}
-
-func TestPurgeResources_IncludeVolumesFalse_SkipsSnapshotsAndVolumes(t *testing.T) {
-	srv := newPurgeTestServer(t)
-
-	err := openstack.PurgeResources(context.Background(), openstack.PurgeOptions{
-		CloudsYAML:     buildPurgeCloudsYAML(srv.URL),
-		CloudName:      "openstack",
-		IncludeVolumes: false,
-		IncludeAppcred: false,
-		Logger:         logr.Discard(),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	if srv.volListCalls != 0 || srv.snapListCalls != 0 {
-		t.Errorf("expected no volume/snapshot list calls when IncludeVolumes is false, got vol=%d snap=%d", srv.volListCalls, srv.snapListCalls)
-	}
-}
-
-func TestPurgeResources_IncludeAppcredTrue_CallsDeleteAppCredential(t *testing.T) {
-	srv := newPurgeTestServer(t)
-
-	err := openstack.PurgeResources(context.Background(), openstack.PurgeOptions{
-		CloudsYAML:     buildPurgeCloudsYAML(srv.URL),
-		CloudName:      "openstack",
-		IncludeVolumes: false,
-		IncludeAppcred: true,
-		Logger:         logr.Discard(),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	if srv.deletedAppcredID != "purge-appcred-id" {
-		t.Errorf("expected appcred %q to be deleted, got %q", "purge-appcred-id", srv.deletedAppcredID)
-	}
-}
-
-func TestPurgeResources_FullSuccess_ReturnsNil(t *testing.T) {
-	srv := newPurgeTestServer(t)
-
-	err := openstack.PurgeResources(context.Background(), openstack.PurgeOptions{
-		CloudsYAML:     buildPurgeCloudsYAML(srv.URL),
-		CloudName:      "openstack",
-		IncludeVolumes: true,
-		IncludeAppcred: false,
-		Logger:         logr.Discard(),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	missingCinder.mu.Lock()
+	defer missingCinder.mu.Unlock()
+	if len(missingCinder.deletePaths) != 0 {
+		t.Fatalf("expected missing Cinder to block every mutation, got %v", missingCinder.deletePaths)
 	}
 }

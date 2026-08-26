@@ -11,6 +11,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/blockstorage/v3/snapshots"
 	"github.com/gophercloud/gophercloud/v2/openstack/blockstorage/v3/volumes"
 	"github.com/gophercloud/gophercloud/v2/pagination"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/cleanup"
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack/apierrors"
@@ -99,7 +100,12 @@ func (s *Service) DeleteSnapshot(ctx context.Context, id string) error {
 		return errors.New("deleting snapshot: ID is empty")
 	}
 
+	logger := log.FromContext(ctx).WithValues("snapshotID", id)
+	logger.Info("Deleting snapshot")
 	err := apierrors.ClassifyDelete(snapshots.Delete(ctx, s.client, id).ExtractErr())
+	if errors.Is(err, cleanup.ErrDeletePending) {
+		logger.Info("Snapshot deletion is still pending")
+	}
 	if err != nil {
 		return fmt.Errorf("deleting snapshot %q: %w", id, err)
 	}
@@ -153,7 +159,12 @@ func (s *Service) DeleteVolume(ctx context.Context, id string) error {
 		return errors.New("deleting volume: ID is empty")
 	}
 
+	logger := log.FromContext(ctx).WithValues("volumeID", id)
+	logger.Info("Deleting volume")
 	err := apierrors.ClassifyDelete(volumes.Delete(ctx, s.client, id, nil).ExtractErr())
+	if errors.Is(err, cleanup.ErrDeletePending) {
+		logger.Info("Volume deletion is still pending")
+	}
 	if err != nil {
 		return fmt.Errorf("deleting volume %q: %w", id, err)
 	}

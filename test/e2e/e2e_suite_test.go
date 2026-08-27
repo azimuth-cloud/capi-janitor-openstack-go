@@ -35,7 +35,7 @@ import (
 var (
 	// managerImage is the manager image to be built and loaded for testing.
 	// Must match the name/tag hardcoded in nix/default.nix's `image` derivation.
-	managerImage = "ghcr.io/azimuth-cloud/cluster-api-janitor-openstack:latest"
+	managerImage = "ghcr.io/azimuth-cloud/capi-janitor-openstack-go:latest"
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
 )

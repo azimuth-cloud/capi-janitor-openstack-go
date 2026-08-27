@@ -23,13 +23,13 @@ It can also remove the cluster application credential when the referenced Secret
 The Kubernetes, CAPI, and CAPO support matrix has not yet been validated for a replacement release.
 The current source builds against these versions:
 
-| Dependency | Current version |
-|---|---|
-| Go | 1.26 |
-| Kubernetes Go modules | 0.36.2 |
-| CAPO API module | 0.14.6 |
-| controller-runtime | 0.24.1 |
-| Helm | 3.x |
+| Dependency            | Current version |
+| --------------------- | --------------- |
+| Go                    | 1.26            |
+| Kubernetes Go modules | 0.36.2          |
+| CAPO API module       | 0.14.6          |
+| controller-runtime    | 0.24.1          |
+| Helm                  | 3.x             |
 
 ## How it works
 
@@ -49,19 +49,19 @@ The roadmap lists the steps that are not yet active in the production path.
 > **Why a finalizer instead of a cleanup job?**
 >
 > Some load balancers created by OCCM hold references to the cluster network, which prevents the Cluster API OpenStack provider from deleting that network.
-> Cleanup runs *before* the network is torn down and *after* all machines are gone.
+> Cleanup runs _before_ the network is torn down and _after_ all machines are gone.
 > This avoids the deadlock and eliminates any race with OCCM while it is still running.
 
 ## Resources cleaned up
 
-| OpenStack service | Resources |
-|---|---|
-| Neutron | Floating IPs associated with Kubernetes Services of type `LoadBalancer` |
-| Octavia | Load balancers with name prefix `kube_service_<cluster>_`, except LBs shared with another cluster |
-| Neutron | Security groups matching the OCCM naming convention |
-| Cinder | Volumes provisioned by the Cinder CSI (configurable, see below) |
-| Cinder | Snapshots carrying the matching Cinder cluster metadata |
-| Keystone | The application credential used by the cluster (if authorized) |
+| OpenStack service | Resources                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------- |
+| Neutron           | Floating IPs associated with Kubernetes Services of type `LoadBalancer`                           |
+| Octavia           | Load balancers with name prefix `kube_service_<cluster>_`, except LBs shared with another cluster |
+| Neutron           | Security groups matching the OCCM naming convention                                               |
+| Cinder            | Volumes provisioned by the Cinder CSI (configurable, see below)                                   |
+| Cinder            | Snapshots carrying the matching Cinder cluster metadata                                           |
+| Keystone          | The application credential used by the cluster (if authorized)                                    |
 
 A matching load balancer with one or more reserved OCCM tags remains eligible for deletion when every reserved tag belongs to the target cluster, including when several Services in that cluster share it.
 A foreign or malformed reserved tag preserves the load balancer and its VIP floating IP.
@@ -90,7 +90,7 @@ kind: OpenStackCluster
 metadata:
   name: my-cluster
   annotations:
-    janitor.capi.stackhpc.com/volumes-policy: "keep"   # or "delete"
+    janitor.capi.stackhpc.com/volumes-policy: 'keep' # or "delete"
 ```
 
 > Any value other than `delete` means volumes will be kept.
@@ -118,10 +118,10 @@ helm upgrade ... --set retryDefaultDelay=120
 
 ### Environment variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `CAPI_JANITOR_DEFAULT_VOLUMES_POLICY` | `delete` | Default volume policy for the operator |
-| `CAPI_JANITOR_RETRY_DEFAULT_DELAY` | `60` | Maximum workqueue backoff delay in seconds |
+| Variable                              | Default  | Description                                |
+| ------------------------------------- | -------- | ------------------------------------------ |
+| `CAPI_JANITOR_DEFAULT_VOLUMES_POLICY` | `delete` | Default volume policy for the operator     |
+| `CAPI_JANITOR_RETRY_DEFAULT_DELAY`    | `60`     | Maximum workqueue backoff delay in seconds |
 
 ## Installation
 
@@ -205,16 +205,27 @@ It does not require an external toolchain.
 nix-build nix -A tests
 
 # Build the manager binary only
-nix-build nix -A manager
+nix-build nix -A manager          # amd64
+nix-build nix -A manager-arm64    # arm64 (cross-compiled from amd64)
 
-# Build the amd64 OCI image
-nix-build nix -A image
+# Build the OCI images
+nix-build nix -A image            # amd64
+nix-build nix -A image-arm64      # arm64 (cross-compiled from amd64)
 
 # Build the arm64 OCI image from amd64
 nix-build nix -A image-arm64
 
 # Generate the CycloneDX SBOM
 nix-build nix -A sbom
+nix-build nix -A sbom-arm64
+```
+
+Each image is a `docker-archive` tarball tagged with its own `architecture`. CI
+pushes both under temporary `<sha>-<arch>` tags and joins them into a
+`linux/amd64` + `linux/arm64` manifest list. To check a build locally:
+
+```sh
+skopeo inspect --config docker-archive:image-arm64.tar.gz | jq .architecture
 ```
 
 > **`nix/nixpkgs.nix`** currently follows the moving `nixos-26.05` branch.
@@ -224,6 +235,10 @@ nix-build nix -A sbom
 > Run `nix-build nix -A manager` after a `go.mod` change.
 > The build will fail and print the new hash to use.
 
+Both binaries are static (`CGO_ENABLED=0`), so the images contain no libc. The
+arm64 build overrides `GOARCH` instead of using `pkgsCross`, which would link
+against the target glibc and add ~50 MB to the image.
+
 ## Observability
 
 The manager exposes metrics and emits Kubernetes Events.
@@ -231,16 +246,16 @@ Deployment parity remains a [release task](ROADMAP.md#replacement-release-work).
 
 ### Prometheus metrics
 
-| Metric | Labels | Description |
-|---|---|---|
+| Metric                        | Labels                      | Description            |
+| ----------------------------- | --------------------------- | ---------------------- |
 | `capi_janitor_cleanups_total` | `result="success\|failure"` | Total cleanup attempts |
 
 ### Kubernetes events
 
-| Reason | Type | Emitted when |
-|---|---|---|
-| `CleanupSucceeded` | Normal | OpenStack purge completed successfully |
-| `CleanupFailed` | Warning | OpenStack purge returned an error |
+| Reason             | Type    | Emitted when                           |
+| ------------------ | ------- | -------------------------------------- |
+| `CleanupSucceeded` | Normal  | OpenStack purge completed successfully |
+| `CleanupFailed`    | Warning | OpenStack purge returned an error      |
 
 ## Project layout
 

@@ -84,6 +84,24 @@ jobs:
       - name: Build arm64 image (cross-compiled)
         run: nix-build nix -A image-arm64 -o image-arm64.tar.gz
 
+      # Not guaranteed to be present on the runner image.
+      - name: Install skopeo
+        run: |
+          nix-build nix/nixpkgs.nix -A skopeo -o skopeo
+          echo "$PWD/skopeo/bin" >> "$GITHUB_PATH"
+
+      - name: Verify per-arch image metadata
+        run: |
+          for ARCH in amd64 arm64; do
+            ACTUAL=$(skopeo inspect --config "docker-archive:image-${ARCH}.tar.gz" \
+              | jq -r '.architecture + "/" + .os')
+            echo "image-${ARCH}.tar.gz -> ${ACTUAL}"
+            if [[ "$ACTUAL" != "${ARCH}/linux" ]]; then
+              echo "Image architecture mismatch: expected ${ARCH}/linux, got ${ACTUAL}" >&2
+              exit 1
+            fi
+          done
+
       - name: Push arch-specific images and create manifest list
         env:
           SHA_TAG: ${{ steps.tags.outputs.sha_tag }}
@@ -100,20 +118,39 @@ jobs:
 
           # For each final tag, create and push a multi-arch manifest list.
           for TAG in $TAGS; do
+            docker manifest rm "$TAG" >/dev/null 2>&1 || true
             docker manifest create "$TAG" \
               --amend "${SHA_TAG}-amd64" \
               --amend "${SHA_TAG}-arm64"
             docker manifest push "$TAG"
           done
 
-      - name: Generate SBOM (CycloneDX)
-        run: nix-build nix -A sbom -o sbom.cdx.json
+      - name: Verify published manifest lists are multi-arch
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          for TAG in $TAGS; do
+            PLATFORMS=$(skopeo inspect --raw "docker://${TAG}" \
+              | jq -r '[.manifests[] | .platform.os + "/" + .platform.architecture] | sort | join(",")')
+            echo "${TAG} -> ${PLATFORMS}"
+            if [[ "$PLATFORMS" != "linux/amd64,linux/arm64" ]]; then
+              echo "Manifest list for ${TAG} is not multi-arch: ${PLATFORMS}" >&2
+              exit 1
+            fi
+          done
 
-      - name: Upload SBOM as artifact
+      - name: Generate SBOMs (CycloneDX)
+        run: |
+          nix-build nix -A sbom -o sbom-amd64.cdx.json
+          nix-build nix -A sbom-arm64 -o sbom-arm64.cdx.json
+
+      - name: Upload SBOMs as artifacts
         uses: actions/upload-artifact@v7
         with:
           name: sbom-${{ steps.semver.outputs.short-sha }}
-          path: sbom.cdx.json
+          path: |
+            sbom-amd64.cdx.json
+            sbom-arm64.cdx.json
 
   build_push_chart:
     name: Build and push Helm chart

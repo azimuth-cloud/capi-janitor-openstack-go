@@ -1,8 +1,12 @@
 { pkgs ? import ./nixpkgs.nix }:
 
 let
-  # Build the manager binary for a given package set (native or cross).
-  buildManager = p: p.buildGoModule {
+  imageName = "ghcr.io/azimuth-cloud/capi-janitor-openstack-go";
+
+  # Build the manager binary for a target GOARCH ("amd64" / "arm64").
+  # CGO is off, so overriding GOARCH cross-compiles without `pkgsCross`, which
+  # would link against the target glibc and bloat the arm64 image.
+  buildManager = goarch: (pkgs.buildGoModule {
     pname = "capi-janitor-openstack-go";
     version = "0.0.0-dev";
     src = ../.;
@@ -12,15 +16,26 @@ let
     # Run `nix-build nix -A manager` once; it will fail and print the real hash.
     vendorHash = "sha256-Sx0uxNGQdKR4Xiv26Lhuin434HTPHcPoqzeg1y6RG+M=";
     postInstall = ''
+      # Cross builds land in $out/bin/$GOOS_$GOARCH.
+      if [ -d "$out/bin/''${GOOS}_''${GOARCH}" ]; then
+        mv "$out/bin/''${GOOS}_''${GOARCH}"/* "$out/bin/"
+        rmdir "$out/bin/''${GOOS}_''${GOARCH}"
+      fi
       mv $out/bin/cmd $out/bin/manager
     '';
     meta.mainProgram = "manager";
-  };
+  }).overrideAttrs (old: {
+    env = old.env // { GOARCH = goarch; };
+    dontStrip = true;  # `-s -w` already strips; native strip rejects foreign ELFs
+    doCheck = false;   # cannot run a foreign-arch test binary
+  });
 
-  # Build a layered OCI image for a given package set.
-  buildImage = p: m: p.dockerTools.buildLayeredImage {
-    name = "ghcr.io/azimuth-cloud/capi-janitor-openstack-go";
+  # `architecture` must be explicit — it otherwise defaults to the native
+  # GOARCH, and CI reads it to assemble the manifest list.
+  buildImage = architecture: m: pkgs.dockerTools.buildLayeredImage {
+    name = imageName;
     tag = "latest";
+    inherit architecture;
     contents = [ pkgs.cacert m ];
     config = {
       Entrypoint = [ "/bin/manager" ];
@@ -34,27 +49,21 @@ let
     };
   };
 
-  manager = buildManager pkgs;
-  image   = buildImage pkgs manager;
-
-  # arm64 cross-compiled on an amd64 host.
-  crossPkgs   = pkgs.pkgsCross.aarch64-multiplatform;
-  manager-arm64 = buildManager crossPkgs;
-  image-arm64   = buildImage crossPkgs manager-arm64;
-
   # SBOM — reads Go build-info embedded in the static binary (survives -s -w).
-  sbom = pkgs.runCommand "sbom.cdx.json" {
+  buildSbom = m: pkgs.runCommand "sbom.cdx.json" {
     nativeBuildInputs = [ pkgs.syft ];
   } ''
     export HOME=$TMPDIR
-    syft scan ${manager}/bin/manager \
+    syft scan ${m}/bin/manager \
       --output cyclonedx-json=$out \
       --quiet
   '';
 
-  # CI check: go fmt + go vet + unit tests (native only — arm64 cross tests cannot
-  # run on an amd64 host, so doCheck is NOT set in buildManager itself).
-  tests = (buildManager pkgs).overrideAttrs (_: {
+  manager = buildManager "amd64";
+  manager-arm64 = buildManager "arm64";
+
+  # CI check: go fmt + go vet + unit tests (host GOARCH only).
+  tests = (buildManager pkgs.go.GOARCH).overrideAttrs (_: {
     pname = "capi-janitor-openstack-go-tests";
     subPackages = [];  # build all packages, not just cmd/
     doCheck = true;
@@ -78,4 +87,12 @@ let
     installPhase = "touch $out";
   });
 
-in { inherit manager image image-arm64 sbom tests; }
+in {
+  inherit manager manager-arm64 tests;
+
+  image       = buildImage "amd64" manager;
+  image-arm64 = buildImage "arm64" manager-arm64;
+
+  sbom       = buildSbom manager;
+  sbom-arm64 = buildSbom manager-arm64;
+}

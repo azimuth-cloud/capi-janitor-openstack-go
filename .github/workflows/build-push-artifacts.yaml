@@ -6,7 +6,7 @@ on:
     branches:
       - main
     tags:
-      - "v*"
+      - 'v*'
   # Also allow publication to be done via a workflow call
   # In this case, the chart version is returned as an output
   workflow_call:
@@ -24,11 +24,25 @@ permissions: {}
 
 jobs:
   build_push_images:
-    name: Build and push images (Nix)
-    runs-on: ubuntu-latest
+    name: Build and push image (${{ matrix.arch }})
+    # Each arch builds on its own native runner so the resulting binary can be
+    # executed for a real smoke test.
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-latest
+            nix-image: image
+            nix-sbom: sbom
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+            nix-image: image-arm64
+            nix-sbom: sbom-arm64
     permissions:
       contents: read
-      packages: write         # required for pushing container images
+      packages: write # required for pushing container images
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,39 +64,8 @@ jobs:
         id: semver
         uses: azimuth-cloud/github-actions/semver@master
 
-      - name: Compute image tags
-        id: tags
-        env:
-          BUILD_REF: ${{ inputs.ref || github.ref }}
-        run: |
-          # All final tags for the manifest list (space-separated)
-          TAGS=""
-          REF="$BUILD_REF"
-          SHA="${{ steps.semver.outputs.short-sha }}"
-          IMAGE="ghcr.io/azimuth-cloud/capi-janitor-openstack-go"
-          if [[ "$REF" == refs/tags/* ]]; then
-            TAG="${REF#refs/tags/}"
-            SEMVER_TAG_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9]*[A-Za-z-][0-9A-Za-z-]*)))*)?$'
-            if (( ${#TAG} > 128 )) || [[ ! "$TAG" =~ $SEMVER_TAG_RE ]]; then
-              echo "Release tag must be OCI-compatible SemVer: vMAJOR.MINOR.PATCH[-PRERELEASE]" >&2
-              exit 1
-            fi
-            TAGS="$IMAGE:$TAG $IMAGE:$SHA"
-          elif [[ "$REF" == refs/heads/* ]]; then
-            BRANCH="${REF#refs/heads/}"
-            TAGS="$IMAGE:$BRANCH $IMAGE:$SHA"
-          else
-            TAGS="$IMAGE:$SHA"
-          fi
-          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=$IMAGE:$SHA" >> "$GITHUB_OUTPUT"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-
-      - name: Build amd64 image
-        run: nix-build nix -A image -o image-amd64.tar.gz
-
-      - name: Build arm64 image (cross-compiled)
-        run: nix-build nix -A image-arm64 -o image-arm64.tar.gz
+      - name: Build image
+        run: nix-build nix -A ${{ matrix.nix-image }} -o image.tar.gz
 
       # Not guaranteed to be present on the runner image.
       - name: Install skopeo
@@ -90,73 +73,85 @@ jobs:
           nix-build nix/nixpkgs.nix -A skopeo -o skopeo
           echo "$PWD/skopeo/bin" >> "$GITHUB_PATH"
 
-      - name: Verify per-arch image metadata
-        run: |
-          for ARCH in amd64 arm64; do
-            ACTUAL=$(skopeo inspect --config "docker-archive:image-${ARCH}.tar.gz" \
-              | jq -r '.architecture + "/" + .os')
-            echo "image-${ARCH}.tar.gz -> ${ACTUAL}"
-            if [[ "$ACTUAL" != "${ARCH}/linux" ]]; then
-              echo "Image architecture mismatch: expected ${ARCH}/linux, got ${ACTUAL}" >&2
-              exit 1
-            fi
-          done
+      # Load the image and run the manager on its native runner.
+      - name: Smoke test the image
+        run: docker run --rm "$(docker load -q -i image.tar.gz | awk '{print $NF}')" --help
 
-      - name: Push arch-specific images and create manifest list
+      - name: Push arch-specific image
         env:
-          SHA_TAG: ${{ steps.tags.outputs.sha_tag }}
-          IMAGE:   ${{ steps.tags.outputs.image }}
-          TAGS:    ${{ steps.tags.outputs.tags }}
-        run: |
-          # Push each arch image under a unique tag used only to assemble the manifest.
-          skopeo copy \
-            docker-archive:image-amd64.tar.gz \
-            "docker://${SHA_TAG}-amd64"
-          skopeo copy \
-            docker-archive:image-arm64.tar.gz \
-            "docker://${SHA_TAG}-arm64"
+          # Per-arch tag consumed by the manifest-list job.
+          DEST: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
+        run: skopeo copy docker-archive:image.tar.gz "docker://${DEST}"
 
-          # For each final tag, create and push a multi-arch manifest list.
+      - name: Generate SBOM (CycloneDX)
+        run: nix-build nix -A ${{ matrix.nix-sbom }} -o sbom-${{ matrix.arch }}.cdx.json
+
+      - name: Upload SBOM as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
+          path: sbom-${{ matrix.arch }}.cdx.json
+
+  push_manifest_list:
+    name: Assemble and push multi-arch manifest list
+    runs-on: ubuntu-latest
+    needs: [build_push_images]
+    permissions:
+      contents: read
+      packages: write # required for pushing the manifest list
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get SemVer version for current commit
+        id: semver
+        uses: azimuth-cloud/github-actions/semver@master
+
+      # Produce the final tags declaratively: branch name, git tag, and short SHA.
+      - name: Calculate image tags
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=raw,value=${{ steps.semver.outputs.short-sha }}
+
+      # Buildx assembles the manifest list from the two per-arch images pushed
+      # by the build job (a no-op build referencing them via imagetools).
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Create and push multi-arch manifest lists
+        env:
+          SRC: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
           for TAG in $TAGS; do
-            docker manifest rm "$TAG" >/dev/null 2>&1 || true
-            docker manifest create "$TAG" \
-              --amend "${SHA_TAG}-amd64" \
-              --amend "${SHA_TAG}-arm64"
-            docker manifest push "$TAG"
+            docker buildx imagetools create -t "$TAG" \
+              "${SRC}-amd64" "${SRC}-arm64"
           done
 
       - name: Verify published manifest lists are multi-arch
         env:
-          TAGS: ${{ steps.tags.outputs.tags }}
+          # Inspecting one tag is enough: all tags point at the same manifest.
+          TAG: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}
         run: |
-          for TAG in $TAGS; do
-            PLATFORMS=$(skopeo inspect --raw "docker://${TAG}" \
-              | jq -r '[.manifests[] | .platform.os + "/" + .platform.architecture] | sort | join(",")')
-            echo "${TAG} -> ${PLATFORMS}"
-            if [[ "$PLATFORMS" != "linux/amd64,linux/arm64" ]]; then
-              echo "Manifest list for ${TAG} is not multi-arch: ${PLATFORMS}" >&2
-              exit 1
-            fi
-          done
-
-      - name: Generate SBOMs (CycloneDX)
-        run: |
-          nix-build nix -A sbom -o sbom-amd64.cdx.json
-          nix-build nix -A sbom-arm64 -o sbom-arm64.cdx.json
-
-      - name: Upload SBOMs as artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: sbom-${{ steps.semver.outputs.short-sha }}
-          path: |
-            sbom-amd64.cdx.json
-            sbom-arm64.cdx.json
+          PLATFORMS=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$TAG" \
+            | jq -r '[.manifests[].platform | .os + "/" + .architecture] | sort | join(",")')
+          echo "$TAG -> $PLATFORMS"
+          [[ "$PLATFORMS" == "linux/amd64,linux/arm64" ]]
 
   build_push_chart:
     name: Build and push Helm chart
     runs-on: ubuntu-latest
-    # Only build and push the chart if the images built successfully
-    needs: [build_push_images]
+    # Only build and push the chart if the images and manifest list published
+    needs: [build_push_images, push_manifest_list]
     outputs:
       chart-version: ${{ steps.artifact-versions.outputs.chart }}
     permissions:
@@ -206,6 +201,7 @@ jobs:
     if: startsWith(inputs.ref || github.ref, 'refs/tags/')
     needs:
       - build_push_images
+      - push_manifest_list
       - build_push_chart
     runs-on: ubuntu-latest
     permissions:

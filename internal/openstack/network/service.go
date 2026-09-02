@@ -10,6 +10,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/security/groups"
 	"github.com/gophercloud/gophercloud/v2/pagination"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/cleanup"
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack/apierrors"
@@ -156,7 +157,12 @@ func (s *Service) DeleteFloatingIP(ctx context.Context, id string) error {
 		return errors.New("deleting floating IP: ID is empty")
 	}
 
+	logger := log.FromContext(ctx).WithValues("floatingIPID", id)
+	logger.Info("Deleting floating IP")
 	err := apierrors.ClassifyDelete(floatingips.Delete(ctx, s.client, id).ExtractErr())
+	if errors.Is(err, cleanup.ErrDeletePending) {
+		logger.Info("Floating IP deletion is still pending")
+	}
 	if err != nil {
 		return fmt.Errorf("deleting floating IP %q: %w", id, err)
 	}
@@ -214,7 +220,12 @@ func (s *Service) DeleteSecurityGroup(ctx context.Context, id string) error {
 		return errors.New("deleting security group: ID is empty")
 	}
 
+	logger := log.FromContext(ctx).WithValues("securityGroupID", id)
+	logger.Info("Deleting security group")
 	err := apierrors.ClassifyDelete(groups.Delete(ctx, s.client, id).ExtractErr())
+	if errors.Is(err, cleanup.ErrDeletePending) {
+		logger.Info("Security group deletion is still pending")
+	}
 	if err != nil {
 		return fmt.Errorf("deleting security group %q: %w", id, err)
 	}

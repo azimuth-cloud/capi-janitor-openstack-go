@@ -154,11 +154,11 @@ func (r *OpenStackClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	credentialPolicy := secret.Annotations[CredentialPolicyAnnotation]
 
 	cleanupErr := r.cleanResources(ctx, openstack.PurgeOptions{
-		CloudsYAML:     cloudsYAML,
-		CloudName:      cloudName,
-		CACert:         caCert,
-		ClusterName:    clusterName,
-		IncludeVolumes: deleteVolumes,
+		CloudsYAML:    cloudsYAML,
+		CloudName:     cloudName,
+		CACert:        caCert,
+		ClusterName:   clusterName,
+		DeleteVolumes: deleteVolumes,
 	})
 	if cleanupErr != nil {
 		if errors.Is(cleanupErr, cleanup.ErrDeletePending) {

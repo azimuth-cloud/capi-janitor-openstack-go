@@ -163,6 +163,35 @@ func TestNewSelectsConfiguredBlockStorageEndpoint(t *testing.T) {
 	}
 }
 
+func TestNewAcceptsVolumeV3Type(t *testing.T) {
+	t.Parallel()
+	client, mux, _ := newAuthenticatedClient(t, testUserID, testProjectID, func(baseURL string) []any {
+		return []any{map[string]any{
+			"type": "volumev3",
+			"endpoints": []any{map[string]string{
+				"interface": "public", "region": "RegionOne", "region_id": "RegionOne",
+				"url": baseURL + "/volume-v3/v3/project-1/",
+			}},
+		}}
+	})
+	mux.HandleFunc("/volume-v3/", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"versions": []any{map[string]any{"id": "v3.0", "status": "CURRENT"}},
+		})
+	})
+	service, err := New(client)
+	if err != nil {
+		t.Fatalf("creating volume service: %v", err)
+	}
+
+	mux.HandleFunc("/volume-v3/v3/project-1/volumes/detail", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"volumes": []any{}})
+	})
+	if _, err := service.ListVolumes(context.Background()); err != nil {
+		t.Fatalf("listing through volumev3 endpoint: %v", err)
+	}
+}
+
 func TestNewFailsWhenBlockStorageEndpointIsMissing(t *testing.T) {
 	t.Parallel()
 	client, _, _ := newAuthenticatedClient(t, testUserID, testProjectID, func(baseURL string) []any {

@@ -26,6 +26,24 @@ jobs:
       - name: Run fmt + vet + unit tests
         run: nix-build nix -A tests
 
+  arm-image:
+    name: ARM64 image smoke test
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: DeterminateSystems/nix-installer-action@07ebb8d2749aa2fac2baae7d1cfa011e4acfd8d1 # v5
+
+      - name: Build ARM64 image
+        run: nix-build nix -A image-arm64 -o image-arm64.tar.gz
+
+      - name: Run ARM64 image
+        run: docker run --rm "$(docker load -q -i image-arm64.tar.gz | awk '{print $NF}')" --help
+
   goreleaser:
     name: GoReleaser snapshot
     runs-on: ubuntu-latest

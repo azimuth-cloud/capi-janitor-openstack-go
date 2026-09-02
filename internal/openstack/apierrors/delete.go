@@ -16,25 +16,32 @@ import (
 // Successful responses and 404 mean that deletion is complete.
 // Responses that require a later check are returned as cleanup.ErrDeletePending.
 func ClassifyDelete(err error) error {
-	responseErr, returnedErr, classifyResponse := exposeDeleteError(err)
-	if !classifyResponse {
-		return returnedErr
+	responseErr, preservedErr, canClassify := splitDeleteError(err)
+	if !canClassify {
+		return preservedErr
 	}
-	return classifyDelete(responseErr, returnedErr)
+	return classifyDelete(responseErr, preservedErr)
 }
 
-// ClassifyApplicationCredentialDelete uses the normal delete rules and also
-// maps HTTP 403 to cleanup.ErrApplicationCredentialForbidden.
-// This special case applies only when an application credential tries to delete itself.
+// ClassifyApplicationCredentialDelete accepts only the exact responses that
+// confirm deletion of the selected application credential. It maps HTTP 403
+// to cleanup.ErrApplicationCredentialForbidden.
 func ClassifyApplicationCredentialDelete(err error) error {
-	responseErr, returnedErr, classifyResponse := exposeDeleteError(err)
-	if !classifyResponse {
-		return returnedErr
+	responseErr, preservedErr, canClassify := splitDeleteError(err)
+	if !canClassify {
+		return preservedErr
 	}
-	if responseCodeIs(responseErr, http.StatusForbidden) {
-		return fmt.Errorf("%w: %w", cleanup.ErrApplicationCredentialForbidden, returnedErr)
+	statusCode, hasStatusCode := responseCode(responseErr)
+	switch {
+	case responseErr == nil,
+		hasStatusCode && statusCode == http.StatusNoContent,
+		hasStatusCode && statusCode == http.StatusNotFound:
+		return nil
+	case hasStatusCode && statusCode == http.StatusForbidden:
+		return fmt.Errorf("%w: %w", cleanup.ErrApplicationCredentialForbidden, preservedErr)
+	default:
+		return preservedErr
 	}
-	return classifyDelete(responseErr, returnedErr)
 }
 
 // PreserveReauthenticationErrors makes the errors inside Gophercloud's
@@ -66,7 +73,7 @@ func PreserveReauthenticationErrors(err error) error {
 	return err
 }
 
-func classifyDelete(responseErr, returnedErr error) error {
+func classifyDelete(responseErr, preservedErr error) error {
 	statusCode, hasStatusCode := responseCode(responseErr)
 	switch {
 	case responseErr == nil,
@@ -74,15 +81,10 @@ func classifyDelete(responseErr, returnedErr error) error {
 		hasStatusCode && statusCode == http.StatusNotFound:
 		return nil
 	case hasStatusCode && (statusCode == http.StatusBadRequest || statusCode == http.StatusConflict):
-		return fmt.Errorf("%w: %w", cleanup.ErrDeletePending, returnedErr)
+		return fmt.Errorf("%w: %w", cleanup.ErrDeletePending, preservedErr)
 	default:
-		return returnedErr
+		return preservedErr
 	}
-}
-
-func responseCodeIs(err error, statusCode int) bool {
-	actual, ok := responseCode(err)
-	return ok && actual == statusCode
 }
 
 func responseCode(err error) (int, bool) {
@@ -99,10 +101,10 @@ func responseCode(err error) (int, bool) {
 	return 0, false
 }
 
-// exposeDeleteError separates the response from the original DELETE request
+// splitDeleteError separates the response from the original DELETE request
 // from any later reauthentication error. A failed reauthentication attempt is
 // never treated as a successful or completed deletion.
-func exposeDeleteError(err error) (responseErr, returnedErr error, classifyResponse bool) {
+func splitDeleteError(err error) (responseErr, preservedErr error, canClassify bool) {
 	var unableToReauthenticate *gophercloud.ErrUnableToReauthenticate
 	if errors.As(err, &unableToReauthenticate) && unableToReauthenticate != nil {
 		return unableToReauthenticate.ErrOriginal, PreserveReauthenticationErrors(err), false

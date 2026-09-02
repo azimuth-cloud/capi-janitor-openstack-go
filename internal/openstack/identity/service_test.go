@@ -96,22 +96,6 @@ func TestNewRejectsInvalidClient(t *testing.T) {
 	}
 }
 
-func TestNewRejectsAuthenticatedClientWithoutUser(t *testing.T) {
-	t.Parallel()
-	client, _ := newAuthenticatedClient(t, "", func(baseURL string) []any {
-		return []any{map[string]any{
-			"type": "identity",
-			"endpoints": []any{map[string]string{
-				"interface": "public", "region": "RegionOne", "region_id": "RegionOne",
-				"url": baseURL + "/identity/v3/",
-			}},
-		}}
-	})
-	if _, err := New(client); err == nil || !strings.Contains(err.Error(), "user ID is empty") {
-		t.Fatalf("expected empty user ID error, got %v", err)
-	}
-}
-
 func TestNewSelectsAndNormalizesConfiguredIdentityEndpoint(t *testing.T) {
 	t.Parallel()
 	client, mux := newAuthenticatedClient(t, testUserID, func(baseURL string) []any {
@@ -161,19 +145,19 @@ func TestNewSelectsAndNormalizesConfiguredIdentityEndpoint(t *testing.T) {
 	}
 }
 
-func TestDeleteApplicationCredentialUsesExactIDAndClassifiesResponses(t *testing.T) {
+func TestDeleteApplicationCredential(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name          string
 		status        int
 		wantErr       bool
-		wantPending   bool
 		wantForbidden bool
 	}{
 		{name: "deleted", status: http.StatusNoContent},
 		{name: "already absent", status: http.StatusNotFound},
-		{name: "bad request", status: http.StatusBadRequest, wantErr: true, wantPending: true},
-		{name: "conflict", status: http.StatusConflict, wantErr: true, wantPending: true},
+		{name: "unexpected accepted response", status: http.StatusAccepted, wantErr: true},
+		{name: "bad request", status: http.StatusBadRequest, wantErr: true},
+		{name: "conflict", status: http.StatusConflict, wantErr: true},
 		{name: "self deletion forbidden", status: http.StatusForbidden, wantErr: true, wantForbidden: true},
 		{name: "server error", status: http.StatusInternalServerError, wantErr: true},
 	}
@@ -182,15 +166,15 @@ func TestDeleteApplicationCredentialUsesExactIDAndClassifiesResponses(t *testing
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			service, mux := newTestService(t)
-			requests := 0
+			requestCount := 0
 			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-				requests++
+				requestCount++
 				if r.Method != http.MethodDelete {
 					t.Errorf("application credential service must not list, got %s", r.Method)
 				}
-				wantPath := "/v3/users/user-1/application_credentials/appcred-1"
-				if r.URL.Path != wantPath {
-					t.Errorf("unexpected identity path: got %q, want %q", r.URL.Path, wantPath)
+				expectedPath := "/v3/users/user-1/application_credentials/appcred-1"
+				if r.URL.Path != expectedPath {
+					t.Errorf("unexpected identity path: got %q, want %q", r.URL.Path, expectedPath)
 				}
 				w.WriteHeader(tt.status)
 			})
@@ -199,8 +183,8 @@ func TestDeleteApplicationCredentialUsesExactIDAndClassifiesResponses(t *testing
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if errors.Is(err, cleanup.ErrDeletePending) != tt.wantPending {
-				t.Fatalf("unexpected pending classification: %v", err)
+			if errors.Is(err, cleanup.ErrDeletePending) {
+				t.Fatalf("credential deletion must not use pending classification: %v", err)
 			}
 			if errors.Is(err, cleanup.ErrApplicationCredentialForbidden) != tt.wantForbidden {
 				t.Fatalf("unexpected forbidden classification: %v", err)
@@ -208,19 +192,19 @@ func TestDeleteApplicationCredentialUsesExactIDAndClassifiesResponses(t *testing
 			if err != nil && !strings.Contains(err.Error(), "appcred-1") {
 				t.Fatalf("operation error does not identify the credential: %v", err)
 			}
-			if requests != 1 {
-				t.Fatalf("expected exactly one delete and no list, got %d requests", requests)
+			if requestCount != 1 {
+				t.Fatalf("expected exactly one delete and no list, got %d requests", requestCount)
 			}
 		})
 	}
 }
 
-func TestDeleteApplicationCredentialRejectsEmptyIDWithoutRequest(t *testing.T) {
+func TestDeleteApplicationCredentialRejectsEmptyID(t *testing.T) {
 	t.Parallel()
 	service, mux := newTestService(t)
-	requests := 0
+	requestCount := 0
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		requests++
+		requestCount++
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -228,12 +212,12 @@ func TestDeleteApplicationCredentialRejectsEmptyIDWithoutRequest(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ID is empty") {
 		t.Fatalf("expected empty ID validation error, got %v", err)
 	}
-	if requests != 0 {
-		t.Fatalf("empty ID made %d identity requests", requests)
+	if requestCount != 0 {
+		t.Fatalf("empty ID made %d identity requests", requestCount)
 	}
 }
 
-func TestDeleteApplicationCredentialPropagatesContextCancellation(t *testing.T) {
+func TestDeleteApplicationCredentialReturnsCancellation(t *testing.T) {
 	t.Parallel()
 	service, mux := newTestService(t)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {

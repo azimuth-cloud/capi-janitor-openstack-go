@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -55,7 +56,13 @@ func TestE2E(t *testing.T) {
 var _ = BeforeSuite(func() {
 	By("building the manager image (Nix)")
 	imageArchive := filepath.Join(os.TempDir(), "cluster-api-janitor-openstack-e2e-image.tar.gz")
-	cmd := exec.Command("nix-build", "nix", "-A", "image", "-o", imageArchive)
+	// Kind nodes are single-arch, so build the image matching the host running
+	// the suite: the default `image` derivation is amd64, `image-arm64` is arm64.
+	nixImage := "image"
+	if runtime.GOARCH == "arm64" {
+		nixImage = "image-arm64"
+	}
+	cmd := exec.Command("nix-build", "nix", "-A", nixImage, "-o", imageArchive)
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
 

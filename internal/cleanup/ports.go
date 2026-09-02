@@ -2,14 +2,24 @@ package cleanup
 
 import "context"
 
-// Runner performs one bounded cleanup iteration. The controller will consume
-// this interface when the new cleanup path is integrated.
+// Runner performs one bounded cleanup iteration.
 type Runner interface {
 	Run(context.Context, Request) (Result, error)
 }
 
+// Services contains the OpenStack service interfaces used by the cleanup runner.
+// Snapshot and volume services are required only when volume deletion is
+// enabled for a request.
+type Services struct {
+	FloatingIPs    FloatingIPService
+	LoadBalancers  LoadBalancerService
+	SecurityGroups SecurityGroupService
+	Snapshots      SnapshotService
+	Volumes        VolumeService
+}
+
 // FloatingIPService supplies the complete floating IP inventory for the
-// selected project and deletes an already-authorised floating IP by ID.
+// selected project and deletes an already authorized floating IP by ID.
 type FloatingIPService interface {
 	ListFloatingIPs(context.Context) ([]FloatingIP, error)
 	// DeleteFloatingIP treats an absent resource as complete and returns
@@ -18,7 +28,7 @@ type FloatingIPService interface {
 }
 
 // LoadBalancerService supplies the complete load balancer inventory for the
-// selected project and region and deletes an already-authorised load balancer
+// selected project and region and deletes an already authorized load balancer
 // by ID.
 type LoadBalancerService interface {
 	ListLoadBalancers(context.Context) ([]LoadBalancer, error)
@@ -28,7 +38,7 @@ type LoadBalancerService interface {
 }
 
 // SecurityGroupService supplies the complete security group inventory for the
-// selected project and deletes an already-authorised security group by ID.
+// selected project and deletes an already authorized security group by ID.
 type SecurityGroupService interface {
 	ListSecurityGroups(context.Context) ([]SecurityGroup, error)
 	// DeleteSecurityGroup treats an absent resource as complete and returns
@@ -37,7 +47,7 @@ type SecurityGroupService interface {
 }
 
 // SnapshotService supplies the complete snapshot inventory for the selected
-// project and region and deletes an already-authorised snapshot by ID.
+// project and region and deletes an already authorized snapshot by ID.
 type SnapshotService interface {
 	ListSnapshots(context.Context) ([]Snapshot, error)
 	// DeleteSnapshot treats an absent resource as complete and returns
@@ -46,7 +56,7 @@ type SnapshotService interface {
 }
 
 // VolumeService supplies the complete volume inventory for the selected
-// project and region and deletes an already-authorised volume by ID.
+// project and region and deletes an already authorized volume by ID.
 type VolumeService interface {
 	ListVolumes(context.Context) ([]Volume, error)
 	// DeleteVolume treats an absent resource as complete and returns

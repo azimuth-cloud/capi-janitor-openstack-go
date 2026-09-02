@@ -212,9 +212,6 @@ nix-build nix -A manager-arm64    # arm64 (cross-compiled from amd64)
 nix-build nix -A image            # amd64
 nix-build nix -A image-arm64      # arm64 (cross-compiled from amd64)
 
-# Build the arm64 OCI image from amd64
-nix-build nix -A image-arm64
-
 # Generate the CycloneDX SBOM
 nix-build nix -A sbom
 nix-build nix -A sbom-arm64

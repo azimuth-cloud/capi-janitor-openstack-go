@@ -18,9 +18,8 @@ package controller
 
 import (
 	"context"
-	"encoding/base64"
+	"errors"
 	"fmt"
-	"math/rand"
 	"os"
 	"strconv"
 	"time"
@@ -30,13 +29,17 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	infrav1 "sigs.k8s.io/cluster-api-provider-openstack/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/cleanup"
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack"
 )
 
@@ -45,12 +48,13 @@ const (
 
 	VolumesPolicyAnnotation    = "janitor.capi.stackhpc.com/volumes-policy"
 	CredentialPolicyAnnotation = "janitor.capi.stackhpc.com/credential-policy"
-	RetryAnnotation            = "janitor.capi.stackhpc.com/retry"
 	ClusterNameLabel           = "cluster.x-k8s.io/cluster-name"
 
 	PolicyDelete = "delete"
 
-	defaultRetryDelay = 60 // seconds
+	defaultRetryDelay  = 60 // seconds
+	retryBaseDelay     = time.Second
+	pendingDeleteDelay = 5 * time.Second
 )
 
 // OpenStackClusterReconciler reconciles OpenStackCluster objects from CAPO.
@@ -61,30 +65,21 @@ type OpenStackClusterReconciler struct {
 	RetryDefaultDelay    int
 	Metrics              *Metrics
 	Recorder             record.EventRecorder
-	// PurgeFunc is called to clean up OpenStack resources; defaults to openstack.PurgeResources.
-	PurgeFunc func(context.Context, openstack.PurgeOptions) error
-	// SleepFunc is called instead of time.Sleep; defaults to time.Sleep.
-	SleepFunc func(time.Duration)
+	// CleanupFunc cleans up OpenStack resources. It defaults to
+	// openstack.PurgeResources.
+	CleanupFunc func(context.Context, openstack.PurgeOptions) error
 }
 
-func (r *OpenStackClusterReconciler) purge(ctx context.Context, opts openstack.PurgeOptions) error {
-	if r.PurgeFunc != nil {
-		return r.PurgeFunc(ctx, opts)
+func (r *OpenStackClusterReconciler) cleanResources(ctx context.Context, options openstack.PurgeOptions) error {
+	if r.CleanupFunc != nil {
+		return r.CleanupFunc(ctx, options)
 	}
-	return openstack.PurgeResources(ctx, opts)
+	return openstack.PurgeResources(ctx, options)
 }
 
-func (r *OpenStackClusterReconciler) sleep(d time.Duration) {
-	if r.SleepFunc != nil {
-		r.SleepFunc(d)
-	} else {
-		time.Sleep(d)
-	}
-}
-
-func (r *OpenStackClusterReconciler) incMetric(result string) {
+func (r *OpenStackClusterReconciler) countCleanup(outcome string) {
 	if r.Metrics != nil {
-		r.Metrics.CleanupsTotal.WithLabelValues(result).Inc()
+		r.Metrics.CleanupsTotal.WithLabelValues(outcome).Inc()
 	}
 }
 
@@ -130,70 +125,64 @@ func (r *OpenStackClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
+	if identityType := cluster.Spec.IdentityRef.Type; identityType != "" && identityType != "Secret" {
+		return ctrl.Result{}, fmt.Errorf("unsupported identity reference type %q", identityType)
+	}
+	if cluster.Spec.IdentityRef.Name == "" {
+		return ctrl.Result{}, errors.New("identity Secret name is empty")
+	}
+
 	// Fetch the cloud credential secret.
-	secret, err := r.getSecret(ctx, cluster.Spec.IdentityRef.Name, req.Namespace)
+	secret, err := r.findSecret(ctx, cluster.Spec.IdentityRef.Name, req.Namespace)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("fetching identity secret: %w", err)
 	}
 	if secret == nil {
-		logger.Error(nil, "clouds.yaml secret not found", "secretName", cluster.Spec.IdentityRef.Name)
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, fmt.Errorf("identity Secret %q not found", cluster.Spec.IdentityRef.Name)
 	}
 
-	cloudsYAML := decodeSecretField(secret.Data["clouds.yaml"])
-	cacert := decodeSecretField(secret.Data["cacert"])
+	cloudsYAML := string(secret.Data["clouds.yaml"])
+	caCert := string(secret.Data["cacert"])
 
 	cloudName := cluster.Spec.IdentityRef.CloudName
 	if cloudName == "" {
 		cloudName = "openstack"
 	}
 
-	includeVolumes := r.volumesPolicyFor(&cluster) == PolicyDelete
+	deleteVolumes := r.volumesPolicyFor(&cluster) == PolicyDelete
 
 	credentialPolicy := secret.Annotations[CredentialPolicyAnnotation]
-	includeAppcred := credentialPolicy == PolicyDelete && len(cluster.Finalizers) == 1
 
-	purgeErr := r.purge(ctx, openstack.PurgeOptions{
+	cleanupErr := r.cleanResources(ctx, openstack.PurgeOptions{
 		CloudsYAML:     cloudsYAML,
 		CloudName:      cloudName,
-		CACert:         cacert,
+		CACert:         caCert,
 		ClusterName:    clusterName,
-		IncludeVolumes: includeVolumes,
-		IncludeAppcred: includeAppcred,
-		Logger:         logger,
+		IncludeVolumes: deleteVolumes,
 	})
-	if purgeErr != nil {
-		r.incMetric("failure")
-		r.recordEvent(&cluster, corev1.EventTypeWarning, "CleanupFailed", purgeErr.Error())
-		logger.Error(purgeErr, "purge failed, will retry")
-		r.sleep(r.retryDelay())
-		if err := r.annotateRetry(ctx, &cluster); err != nil && !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
+	if cleanupErr != nil {
+		if errors.Is(cleanupErr, cleanup.ErrDeletePending) {
+			logger.Info("OpenStack resource deletion is still in progress")
+			return ctrl.Result{RequeueAfter: pendingDeleteDelay}, nil
 		}
-		return ctrl.Result{}, nil
+		r.countCleanup("failure")
+		r.recordEvent(&cluster, corev1.EventTypeWarning, "CleanupFailed", cleanupErr.Error())
+		return ctrl.Result{}, fmt.Errorf("cleaning OpenStack resources: %w", cleanupErr)
 	}
 
-	r.incMetric("success")
-	r.recordEvent(&cluster, corev1.EventTypeNormal, "CleanupSucceeded", "OpenStack resources cleaned up successfully")
-
-	// Delete appcred secret if this is the last finalizer and policy says so.
+	// Credential deletion is the next implementation phase. Keep the Secret and
+	// finalizer until that transition has its persistent checkpoint.
 	if credentialPolicy == PolicyDelete {
-		if len(cluster.Finalizers) == 1 {
-			if err := r.deleteSecret(ctx, secret.Name, req.Namespace); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("deleting credential secret: %w", err)
-			}
-			logger.Info("cloud credential secret deleted")
-		} else {
-			// Other finalizers still present; trigger a retry when they are removed.
-			other := otherFinalizer(cluster.Finalizers, Finalizer)
-			logger.Info("waiting for other finalizer before deleting appcred", "otherFinalizer", other)
-			r.sleep(5 * time.Second)
-			if err := r.annotateRetry(ctx, &cluster); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
+		if len(cluster.Finalizers) > 1 {
+			blockingFinalizer := findOtherFinalizer(cluster.Finalizers, Finalizer)
+			logger.Info("Waiting for another finalizer before deleting the application credential", "otherFinalizer", blockingFinalizer)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
+		return ctrl.Result{}, errors.New("application credential cleanup checkpoint is not implemented")
 	}
+
+	r.countCleanup("success")
+	r.recordEvent(&cluster, corev1.EventTypeNormal, "CleanupSucceeded", "OpenStack resources cleaned up successfully")
 
 	// Remove our finalizer.
 	controllerutil.RemoveFinalizer(&cluster, Finalizer)
@@ -214,6 +203,12 @@ func (r *OpenStackClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.OpenStackCluster{}).
+		WithOptions(ctrlcontroller.Options{
+			RateLimiter: workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](
+				retryBaseDelay,
+				r.maxRetryDelay(),
+			),
+		}).
 		Complete(r)
 }
 
@@ -236,24 +231,15 @@ func (r *OpenStackClusterReconciler) volumesPolicyFor(cluster *infrav1.OpenStack
 	return PolicyDelete
 }
 
-func (r *OpenStackClusterReconciler) retryDelay() time.Duration {
-	d := r.RetryDefaultDelay
-	if d <= 0 {
-		d = defaultRetryDelay
+func (r *OpenStackClusterReconciler) maxRetryDelay() time.Duration {
+	seconds := r.RetryDefaultDelay
+	if seconds <= 0 {
+		seconds = defaultRetryDelay
 	}
-	return time.Duration(d) * time.Second
+	return time.Duration(seconds) * time.Second
 }
 
-func (r *OpenStackClusterReconciler) annotateRetry(ctx context.Context, cluster *infrav1.OpenStackCluster) error {
-	patch := client.MergeFrom(cluster.DeepCopy())
-	if cluster.Annotations == nil {
-		cluster.Annotations = make(map[string]string)
-	}
-	cluster.Annotations[RetryAnnotation] = randString(8)
-	return r.Patch(ctx, cluster, patch)
-}
-
-func (r *OpenStackClusterReconciler) getSecret(ctx context.Context, name, namespace string) (*corev1.Secret, error) {
+func (r *OpenStackClusterReconciler) findSecret(ctx context.Context, name, namespace string) (*corev1.Secret, error) {
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -264,39 +250,10 @@ func (r *OpenStackClusterReconciler) getSecret(ctx context.Context, name, namesp
 	return &secret, nil
 }
 
-func (r *OpenStackClusterReconciler) deleteSecret(ctx context.Context, name, namespace string) error {
-	var secret corev1.Secret
-	secret.Name = name
-	secret.Namespace = namespace
-	return r.Delete(ctx, &secret)
-}
-
-// decodeSecretField base64-decodes a secret data field if needed.
-// Kubernetes stores secret data already base64-decoded in the Go API.
-func decodeSecretField(data []byte) string {
-	if len(data) == 0 {
-		return ""
-	}
-	decoded, err := base64.StdEncoding.DecodeString(string(data))
-	if err != nil {
-		return string(data) // already raw bytes from Kubernetes API
-	}
-	return string(decoded)
-}
-
-func randString(n int) string {
-	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
-	}
-	return string(b)
-}
-
-func otherFinalizer(finalizers []string, skip string) string {
-	for _, f := range finalizers {
-		if f != skip {
-			return f
+func findOtherFinalizer(finalizers []string, excluded string) string {
+	for _, finalizer := range finalizers {
+		if finalizer != excluded {
+			return finalizer
 		}
 	}
 	return ""

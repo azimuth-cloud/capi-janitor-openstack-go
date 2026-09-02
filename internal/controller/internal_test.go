@@ -18,11 +18,11 @@ package controller
 
 import "testing"
 
-func TestOtherFinalizer(t *testing.T) {
-	cases := []struct {
+func TestFindOtherFinalizer(t *testing.T) {
+	tests := []struct {
 		name       string
 		finalizers []string
-		skip       string
+		excluded   string
 		want       string
 	}{
 		{"multiple, one to skip", []string{"a.finalizer", Finalizer, "b.finalizer"}, Finalizer, "a.finalizer"},
@@ -30,11 +30,11 @@ func TestOtherFinalizer(t *testing.T) {
 		{"single matching (skip target only)", []string{Finalizer}, Finalizer, ""},
 		{"single non-matching", []string{"other.finalizer"}, Finalizer, "other.finalizer"},
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := otherFinalizer(c.finalizers, c.skip)
-			if got != c.want {
-				t.Errorf("otherFinalizer(%v, %q) = %q, want %q", c.finalizers, c.skip, got, c.want)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := findOtherFinalizer(test.finalizers, test.excluded)
+			if got != test.want {
+				t.Errorf("findOtherFinalizer(%v, %q) = %q, want %q", test.finalizers, test.excluded, got, test.want)
 			}
 		})
 	}

@@ -2,8 +2,21 @@ apiVersion: v1
 entries:
   cluster-api-janitor-openstack:
   - apiVersion: v2
+    appVersion: d9007bf
+    created: "2026-09-17T14:19:39.791965237Z"
+    description: Helm chart for deploying the Cluster API Janitor for OpenStack
+    digest: 093f2dfd5009dd31ac4d3926f92619319b9fb596d9fc69d0d5639517c8ad9d4f
+    home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
+    name: cluster-api-janitor-openstack
+    sources:
+    - https://github.com/azimuth-cloud/capi-janitor-openstack-go
+    type: application
+    urls:
+    - cluster-api-janitor-openstack-0.1.0-dev.0.main.34.tgz
+    version: 0.1.0-dev.0.main.34
+  - apiVersion: v2
     appVersion: 516882c
-    created: "2026-09-17T14:19:25.969446327Z"
+    created: "2026-09-17T14:19:39.791430802Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: a88d015b7e475245e3bb51cdd1c8ab577e634f9fbab49dee9276d02bdad4d67f
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -16,7 +29,7 @@ entries:
     version: 0.1.0-dev.0.main.33
   - apiVersion: v2
     appVersion: 944317f
-    created: "2026-09-17T14:19:25.969189027Z"
+    created: "2026-09-17T14:19:39.79094105Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: a6b35c9752252d50eb4c6b11eadee5e7a7ceffb88e31a6e50d1035ca49a76a02
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -29,7 +42,7 @@ entries:
     version: 0.1.0-dev.0.main.32
   - apiVersion: v2
     appVersion: 4f08a79
-    created: "2026-09-17T14:19:25.968902362Z"
+    created: "2026-09-17T14:19:39.790454193Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: c52d764c2182d875ccb60adcb08bdb6e336bca82f0f86b36e78835267cbc5f1e
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -42,7 +55,7 @@ entries:
     version: 0.1.0-dev.0.main.31
   - apiVersion: v2
     appVersion: 74eedbd
-    created: "2026-09-17T14:19:25.968642206Z"
+    created: "2026-09-17T14:19:39.789793627Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 54ab9e7a45068826f9f83e860978b0cccfaa8938e718b264799c8e1a3a0ad010
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -55,7 +68,7 @@ entries:
     version: 0.1.0-dev.0.main.25
   - apiVersion: v2
     appVersion: aed8b98
-    created: "2026-09-17T14:19:25.968364909Z"
+    created: "2026-09-17T14:19:39.789157487Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 55e3c951ff86770e3d75c10ff0d4135ebfb612b114ed032e4041b5ff50cf52c6
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -68,7 +81,7 @@ entries:
     version: 0.1.0-dev.0.main.24
   - apiVersion: v2
     appVersion: b33c9bd
-    created: "2026-09-17T14:19:25.96809738Z"
+    created: "2026-09-17T14:19:39.788523837Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 5a7c38db99d729f9d2137c08b8f1427a73422e2c7c1efa8ca38147fe709ea40b
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -81,7 +94,7 @@ entries:
     version: 0.1.0-dev.0.main.23
   - apiVersion: v2
     appVersion: 1f9f2f2
-    created: "2026-09-17T14:19:25.967811266Z"
+    created: "2026-09-17T14:19:39.787834974Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: fb391bcef9a1e82f69560b84280ef0d21b3b2b9d8fdb635eaaa99fd926555b94
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -94,7 +107,7 @@ entries:
     version: 0.1.0-dev.0.main.22
   - apiVersion: v2
     appVersion: cd3e826
-    created: "2026-09-17T14:19:25.967302944Z"
+    created: "2026-09-17T14:19:39.787324994Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 55ed3a4666b6744905578103833121c0612124cbc8a9b22d1c881f63a9ea1b2c
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -107,7 +120,7 @@ entries:
     version: 0.1.0-dev.0.main.21
   - apiVersion: v2
     appVersion: dcd6aa7
-    created: "2026-09-17T14:19:25.966789375Z"
+    created: "2026-09-17T14:19:39.786851782Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 5057abba337e5b72d6c83e5be628d39a3db47824ec1b57fd780ea01c71b9b977
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -120,7 +133,7 @@ entries:
     version: 0.1.0-dev.0.main.20
   - apiVersion: v2
     appVersion: 02e3491
-    created: "2026-09-17T14:19:25.966101511Z"
+    created: "2026-09-17T14:19:39.786350348Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: fd6e0678897f0fc04aa833cc6831fbcc147f261bd85d57d3dce666fce962ab0c
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -133,7 +146,7 @@ entries:
     version: 0.1.0-dev.0.main.19
   - apiVersion: v2
     appVersion: c64f813
-    created: "2026-09-17T14:19:25.965805339Z"
+    created: "2026-09-17T14:19:39.785891173Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: afeca25bc55bcb6e17619cec66d8b36a8ac786366079a362453177e0f7475262
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -146,7 +159,7 @@ entries:
     version: 0.1.0-dev.0.main.18
   - apiVersion: v2
     appVersion: a07ee1e
-    created: "2026-09-17T14:19:25.965451529Z"
+    created: "2026-09-17T14:19:39.78539056Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: e9523861c8170efc23b33262de2722c3b9fe19f923747ae712365f1d14054ec0
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -159,7 +172,7 @@ entries:
     version: 0.1.0-dev.0.main.17
   - apiVersion: v2
     appVersion: 8a9d869
-    created: "2026-09-17T14:19:25.96522168Z"
+    created: "2026-09-17T14:19:39.784919433Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 01907853ff7daea3752882be492d29368360cc67ff665e7f8e31e9204a969d0e
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -172,7 +185,7 @@ entries:
     version: 0.1.0-dev.0.main.16
   - apiVersion: v2
     appVersion: f35e49a
-    created: "2026-09-17T14:19:25.964952056Z"
+    created: "2026-09-17T14:19:39.784397881Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 71326a3f221baf99ef7cc0bfcfccb42ca6e087ba9706f2aba59d6b0683960e13
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -185,7 +198,7 @@ entries:
     version: 0.1.0-dev.0.main.15
   - apiVersion: v2
     appVersion: 82aa147
-    created: "2026-09-17T14:19:25.964700457Z"
+    created: "2026-09-17T14:19:39.783928817Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 14de3f0cd6599b57aff4c8279c33e5e6d9e37c132429c9045989f3fc6cbacf9b
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -198,7 +211,7 @@ entries:
     version: 0.1.0-dev.0.main.14
   - apiVersion: v2
     appVersion: 4d14a0c
-    created: "2026-09-17T14:19:25.964451242Z"
+    created: "2026-09-17T14:19:39.783301519Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: af493ee0cd68617e28fe2e2eae68f6864b4f16c3dc11decfb605989bb159a222
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -211,7 +224,7 @@ entries:
     version: 0.1.0-dev.0.main.13
   - apiVersion: v2
     appVersion: a3e2561
-    created: "2026-09-17T14:19:25.964200975Z"
+    created: "2026-09-17T14:19:39.782840119Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 4f39382fba93f2ac60b00566e4a9575b570318f7f51c5cc7e3e18c0b12432eec
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -224,7 +237,7 @@ entries:
     version: 0.1.0-dev.0.main.12
   - apiVersion: v2
     appVersion: ef93b32
-    created: "2026-09-17T14:19:25.963935008Z"
+    created: "2026-09-17T14:19:39.782348654Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 64a039974f7707a187ca7cd5fa775713e114c1f329b90acb4b270489115e8764
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -237,7 +250,7 @@ entries:
     version: 0.1.0-dev.0.main.11
   - apiVersion: v2
     appVersion: 3f294f6
-    created: "2026-09-17T14:19:25.963701382Z"
+    created: "2026-09-17T14:19:39.781889869Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: c3aaf9270f0bd16640a32066f0ddb82a3bdce72b59abe951e6d56d32f902279b
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -250,7 +263,7 @@ entries:
     version: 0.1.0-dev.0.fix-disable-secret-cache.32
   - apiVersion: v2
     appVersion: 6911cc2
-    created: "2026-09-17T14:19:25.96346412Z"
+    created: "2026-09-17T14:19:39.781410146Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 597fd005f08047b7e936bb21310b603716481681cce9167f72b06f30341af704
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -263,7 +276,7 @@ entries:
     version: 0.1.0-dev.0.feat-enforce-application-credential-rules.35
   - apiVersion: v2
     appVersion: e328b52
-    created: "2026-09-17T14:19:25.963216037Z"
+    created: "2026-09-17T14:19:39.780938808Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 065cc1dfd8cab2c4ea38b9cc791fb7752de6723f326a3e852c712b15734caa36
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -276,7 +289,7 @@ entries:
     version: 0.1.0-dev.0.feat-enforce-application-credential-rules.34
   - apiVersion: v2
     appVersion: 7c3623e
-    created: "2026-09-17T14:19:25.962944269Z"
+    created: "2026-09-17T14:19:39.780487086Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 88d2bd4adccf674151d5e30808a678335289a071f0e41afe1c5053b0e6af9978
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -289,7 +302,7 @@ entries:
     version: 0.1.0-dev.0.feat-add-typed-openstack-cleanup.34
   - apiVersion: v2
     appVersion: d9e190d
-    created: "2026-09-17T14:19:25.962674135Z"
+    created: "2026-09-17T14:19:39.780190944Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 6e669f27d1b79241b2df04c47326f1d6c9670973011958d7a2700b976ee3e10d
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -302,7 +315,7 @@ entries:
     version: 0.1.0-dev.0.feat-add-typed-openstack-cleanup.33
   - apiVersion: v2
     appVersion: d1a2ff8
-    created: "2026-09-17T14:19:25.962407898Z"
+    created: "2026-09-17T14:19:39.779920771Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: 6fe85b1619aacd67e23145733d4242b8b1efed61ee8da1c7c2b4bd8214ea79b1
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -315,7 +328,7 @@ entries:
     version: 0.1.0-dev.0.feat-add-controller-cleanup-outcomes.33
   - apiVersion: v2
     appVersion: 8531dd1
-    created: "2026-09-17T14:19:25.962112878Z"
+    created: "2026-09-17T14:19:39.779577512Z"
     description: Helm chart for deploying the Cluster API Janitor for OpenStack
     digest: baa24d8d13e95e54b0ce5148530a50b3b99a2cfab666a26a4ae7d76c452cf5a2
     home: https://github.com/azimuth-cloud/capi-janitor-openstack-go
@@ -326,4 +339,4 @@ entries:
     urls:
     - cluster-api-janitor-openstack-0.1.0-dev.0.feat-add-controller-cleanup-outcomes.32.tgz
     version: 0.1.0-dev.0.feat-add-controller-cleanup-outcomes.32
-generated: "2026-09-17T14:19:25.961638974Z"
+generated: "2026-09-17T14:19:39.779170123Z"

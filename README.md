@@ -170,8 +170,14 @@ go build ./...
 ### Run tests
 
 ```sh
-go test ./...
+go test ./...        # Unit tests
+make test           # Generated files, formatting, vet, unit tests, and envtest
+make test-envtest   # Controller integration tests only
 ```
+
+Envtest starts its own API server and etcd and installs the OpenStackCluster CRD from the CAPO version in `go.mod`.
+It does not use an existing cluster.
+These tests require the `envtest` build tag and run in a separate CI job.
 
 Current test evidence and the gaps that aggregate coverage cannot close are tracked in the [roadmap](ROADMAP.md#final-result).
 
@@ -190,7 +196,7 @@ make generate      # regenerate DeepCopy methods
 make manifests     # regenerate CRD/RBAC YAML
 make fmt           # go fmt
 make vet           # go vet
-make test          # go test (excludes e2e)
+make test          # unit tests and isolated envtest (excludes e2e)
 make build         # go build ./cmd/main.go
 ```
 

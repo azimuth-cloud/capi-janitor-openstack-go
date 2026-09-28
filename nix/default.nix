@@ -20,7 +20,7 @@ let
         "-w"
       ];
       # Run `nix-build nix -A manager` once; it will fail and print the real hash.
-      vendorHash = "sha256-VbUZAmZtuSSa611i4xxI/1alwMSUAm84OSNfhk00vSk=";
+      vendorHash = "sha256-+zgHcA0d0EJ4Y7w5JbU7TySJ6Ce7YyrDMz3xJaVHG84=";
       postInstall = ''
         # Cross builds land in $out/bin/$GOOS_$GOARCH.
         if [ -d "$out/bin/''${GOOS}_''${GOARCH}" ]; then

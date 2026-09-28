@@ -10,7 +10,8 @@ for Kubernetes clusters created with the
 
 The operator watches `OpenStackCluster` resources in every namespace and removes dangling OpenStack resources when deletion starts.
 These resources include floating IPs, load balancers, security groups, Cinder volumes, and Cinder snapshots.
-It can also remove the cluster application credential when the referenced Secret opts into credential deletion.
+Application credential and Secret deletion is not implemented yet.
+If requested, the controller returns an error and keeps the Secret and finalizer.
 
 > [!IMPORTANT]
 > This repository is still working toward the replacement release criteria.
@@ -33,8 +34,8 @@ The current source builds against these versions:
 
 ## How it works
 
-This is the target replacement lifecycle.
-The roadmap lists the steps that are not yet active in the production path.
+The operator uses Gophercloud to clean up OpenStack resources.
+Application credential and Secret deletion in step 4 is not implemented yet.
 
 1. When an `OpenStackCluster` is created, the operator adds its finalizer
    (`janitor.capi.stackhpc.com`) to the resource.
@@ -61,7 +62,7 @@ The roadmap lists the steps that are not yet active in the production path.
 | Neutron           | Security groups matching the OCCM naming convention                                               |
 | Cinder            | Volumes provisioned by the Cinder CSI (configurable, see below)                                   |
 | Cinder            | Snapshots carrying the matching Cinder cluster metadata                                           |
-| Keystone          | The application credential used by the cluster (if authorized)                                    |
+| Keystone          | Application credential deletion (not implemented yet)                                            |
 
 A matching load balancer with one or more reserved OCCM tags remains eligible for deletion when every reserved tag belongs to the target cluster, including when several Services in that cluster share it.
 A foreign or malformed reserved tag preserves the load balancer and its VIP floating IP.
@@ -139,7 +140,8 @@ The Secret annotation `janitor.capi.stackhpc.com/credential-policy: delete` opts
 Deletion starts only after a fresh, complete inventory shows that the other owned resources are absent and the Janitor finalizer is the only finalizer.
 A missing annotation or any value other than the exact value `delete` keeps the application credential and Secret.
 The annotation declares ownership of the direct Secret and must not be set on a shared Secret.
-If the controller cannot confirm credential deletion, it keeps the Secret and finalizer for recovery.
+The controller currently returns an error at this step because the credential checkpoint is not implemented.
+It keeps the Secret and finalizer.
 See the [application credential cleanup policy](docs/design/python-compatibility-policy.md#application-credential-cleanup) for the full deletion and recovery rules.
 
 Do not add credentials to the release bundle or commit them to the repository.
@@ -261,7 +263,7 @@ cmd/                        # Operator entry point
 internal/
   cleanup/                  # Cleanup policy, outcomes, and service interfaces
   controller/               # Reconciler, metrics, config
-  openstack/                # Authentication and legacy cleanup path
+  openstack/                # Authentication and resource cleanup
     network/                # Typed Neutron service
     loadbalancer/           # Typed Octavia service
     volume/                 # Typed Cinder service

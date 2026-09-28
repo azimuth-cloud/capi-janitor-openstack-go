@@ -162,6 +162,38 @@ func TestReconcile_FinalizerAlreadyPresent_Idempotent(t *testing.T) {
 	}
 }
 
+func TestReconcile_DoesNotAddFinalizerAfterDeletionStarts(t *testing.T) {
+	cluster := newCluster("mycluster", "default")
+	cluster.Finalizers = []string{"other.example.com/finalizer"}
+	clusterReads := 0
+	r, c := newReconcilerWithInterceptors(nil, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key types.NamespacedName, obj client.Object, opts ...client.GetOption) error {
+			clusterReads++
+			if clusterReads == 2 {
+				latest := &infrav1.OpenStackCluster{}
+				if err := c.Get(ctx, key, latest); err != nil {
+					return err
+				}
+				if err := c.Delete(ctx, latest); err != nil {
+					return err
+				}
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}, cluster)
+
+	if _, err := r.Reconcile(t.Context(), reconcileRequest(cluster.Name, cluster.Namespace)); err != nil {
+		t.Fatal(err)
+	}
+	got := getClusterOrNil(t, c, cluster.Name, cluster.Namespace)
+	if got == nil || got.DeletionTimestamp.IsZero() {
+		t.Fatal("expected a deleting cluster retained by the other finalizer")
+	}
+	if controllerutil.ContainsFinalizer(got, controller.Finalizer) {
+		t.Fatal("added the Janitor finalizer after deletion started")
+	}
+}
+
 // ── US8.2: Cluster name from label or metadata.name ──────────────────────────
 
 // Scenario: Label cluster.x-k8s.io/cluster-name present → label name used
@@ -225,6 +257,70 @@ func TestReconcile_RemovesFinalizer_AfterCleanup(t *testing.T) {
 	got := getClusterOrNil(t, c, "mycluster", "default")
 	if got != nil && controllerutil.ContainsFinalizer(got, controller.Finalizer) {
 		t.Errorf("expected finalizer %q to be removed after cleanup", controller.Finalizer)
+	}
+}
+
+func TestReconcile_RetainsFinalizerWhenCleanupScopeChanges(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*infrav1.OpenStackCluster)
+	}{
+		{"generation", func(c *infrav1.OpenStackCluster) { c.Generation++ }},
+		{"cluster name", withClusterLabel("another-cluster")},
+		{"identity", func(c *infrav1.OpenStackCluster) { c.Spec.IdentityRef.Name = "other-credentials" }},
+		{"volume policy", func(c *infrav1.OpenStackCluster) {
+			c.Annotations = map[string]string{controller.VolumesPolicyAnnotation: controller.PolicyDelete}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := newCluster("mycluster", "default", withFinalizer, withDeletionTimestamp)
+			cluster.Annotations = map[string]string{controller.VolumesPolicyAnnotation: "keep"}
+			r, c := newReconciler(nil, cluster, newSecret("cloud-credentials", "default"))
+			r.CleanupFunc = func(ctx context.Context, _ openstack.PurgeOptions) error {
+				latest := &infrav1.OpenStackCluster{}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(cluster), latest); err != nil {
+					return err
+				}
+				tt.change(latest)
+				return c.Update(ctx, latest)
+			}
+			_, err := r.Reconcile(t.Context(), reconcileRequest(cluster.Name, cluster.Namespace))
+			if !apierrors.IsConflict(err) {
+				t.Fatalf("expected a conflict for changed cleanup scope, got %v", err)
+			}
+			got := getClusterOrNil(t, c, cluster.Name, cluster.Namespace)
+			if got == nil || !controllerutil.ContainsFinalizer(got, controller.Finalizer) {
+				t.Fatal("removed the finalizer using cleanup results for an old scope")
+			}
+		})
+	}
+}
+
+func TestReconcile_DoesNotFinalizeReplacementObject(t *testing.T) {
+	cluster := newCluster("mycluster", "default", withFinalizer, withDeletionTimestamp)
+	cluster.UID = "original"
+	r, c := newReconciler(nil, cluster, newSecret("cloud-credentials", "default"))
+	r.CleanupFunc = func(ctx context.Context, _ openstack.PurgeOptions) error {
+		latest := &infrav1.OpenStackCluster{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(cluster), latest); err != nil {
+			return err
+		}
+		controllerutil.RemoveFinalizer(latest, controller.Finalizer)
+		if err := c.Update(ctx, latest); err != nil {
+			return err
+		}
+		replacement := newCluster(cluster.Name, cluster.Namespace, withFinalizer)
+		replacement.UID = "replacement"
+		return c.Create(ctx, replacement)
+	}
+	_, err := r.Reconcile(t.Context(), reconcileRequest(cluster.Name, cluster.Namespace))
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("expected a conflict for a replaced object, got %v", err)
+	}
+	got := getClusterOrNil(t, c, cluster.Name, cluster.Namespace)
+	if got == nil || got.UID != "replacement" || !controllerutil.ContainsFinalizer(got, controller.Finalizer) {
+		t.Fatal("changed the replacement object's finalizer")
 	}
 }
 
@@ -311,12 +407,12 @@ func TestReconcile_GetError_NonNotFound_Propagates(t *testing.T) {
 	}
 }
 
-// Scenario: adding the finalizer fails on Update → propagated
-func TestReconcile_AddFinalizer_UpdateError_Propagates(t *testing.T) {
+// Scenario: adding the finalizer fails on Patch → propagated
+func TestReconcile_AddFinalizer_PatchError_Propagates(t *testing.T) {
 	cluster := newCluster("mycluster", "default")
 	r, _ := newReconcilerWithInterceptors(nil, interceptor.Funcs{
-		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-			return errors.New("update failed")
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			return errors.New("patch failed")
 		},
 	}, cluster)
 
@@ -485,16 +581,16 @@ func TestReconcile_RequeuesForFinalizers(t *testing.T) {
 	}
 }
 
-// Scenario: removing the janitor finalizer fails on Update → propagated
-func TestReconcile_RemoveFinalizer_UpdateError_Propagates(t *testing.T) {
+// Scenario: removing the janitor finalizer fails on Patch → propagated
+func TestReconcile_RemoveFinalizer_PatchError_Propagates(t *testing.T) {
 	cluster := newCluster("mycluster", "default", withFinalizer, withDeletionTimestamp)
 	secret := newSecret("cloud-credentials", "default") // no credential-policy-delete annotation
 
 	r, _ := newReconcilerWithInterceptors(
 		func(context.Context, openstack.PurgeOptions) error { return nil },
 		interceptor.Funcs{
-			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-				return errors.New("update failed")
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				return errors.New("patch failed")
 			},
 		},
 		cluster, secret,

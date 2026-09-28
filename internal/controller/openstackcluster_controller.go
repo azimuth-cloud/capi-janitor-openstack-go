@@ -60,6 +60,8 @@ const (
 // OpenStackClusterReconciler reconciles OpenStackCluster objects from CAPO.
 type OpenStackClusterReconciler struct {
 	client.Client
+	// APIReader bypasses the cache before changing finalizers.
+	APIReader            client.Reader
 	Scheme               *runtime.Scheme
 	DefaultVolumesPolicy string
 	RetryDefaultDelay    int
@@ -110,11 +112,13 @@ func (r *OpenStackClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Not deleting: ensure our finalizer is present.
 	if cluster.DeletionTimestamp.IsZero() {
 		if !controllerutil.ContainsFinalizer(&cluster, Finalizer) {
-			controllerutil.AddFinalizer(&cluster, Finalizer)
-			if err := r.Update(ctx, &cluster); err != nil {
+			changed, err := r.patchFinalizer(ctx, &cluster, true)
+			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 			}
-			logger.Info("added janitor finalizer to cluster")
+			if changed {
+				logger.Info("Added Janitor finalizer to OpenStackCluster")
+			}
 		}
 		return ctrl.Result{}, nil
 	}
@@ -181,20 +185,71 @@ func (r *OpenStackClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, errors.New("application credential cleanup checkpoint is not implemented")
 	}
 
-	r.countCleanup("success")
-	r.recordEvent(&cluster, corev1.EventTypeNormal, "CleanupSucceeded", "OpenStack resources cleaned up successfully")
-
 	// Remove our finalizer.
-	controllerutil.RemoveFinalizer(&cluster, Finalizer)
-	if err := r.Update(ctx, &cluster); err != nil {
+	changed, err := r.patchFinalizer(ctx, &cluster, false)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
-	logger.Info("removed janitor finalizer from cluster")
+	if changed {
+		r.countCleanup("success")
+		r.recordEvent(&cluster, corev1.EventTypeNormal, "CleanupSucceeded", "OpenStack resources cleaned up successfully")
+		logger.Info("Removed Janitor finalizer from OpenStackCluster")
+	}
 	return ctrl.Result{}, nil
+}
+
+// patchFinalizer changes only the Janitor finalizer on the latest object.
+// Conflicts go back to the workqueue so a later reconcile observes state and
+// verifies cleanup again, without sleeping or retrying inside reconciliation.
+func (r *OpenStackClusterReconciler) patchFinalizer(ctx context.Context, observed *infrav1.OpenStackCluster, add bool) (bool, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	var latest infrav1.OpenStackCluster
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(observed), &latest); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	conflict := func(message string) (bool, error) {
+		return false, apierrors.NewConflict(
+			infrav1.SchemeGroupVersion.WithResource("openstackclusters").GroupResource(), observed.Name, errors.New(message),
+		)
+	}
+	if latest.UID != observed.UID {
+		return conflict("OpenStackCluster was replaced during reconciliation")
+	}
+
+	base := latest.DeepCopy()
+	if add {
+		// Deletion may have started since the cached read at reconcile entry.
+		if !latest.DeletionTimestamp.IsZero() || !controllerutil.AddFinalizer(&latest, Finalizer) {
+			return false, nil
+		}
+	} else {
+		if !controllerutil.ContainsFinalizer(&latest, Finalizer) {
+			return false, nil
+		}
+		// Metadata unrelated to cleanup can change safely. A changed cleanup
+		// scope must be observed and verified before dropping the finalizer.
+		if latest.Generation != observed.Generation || latest.Spec.IdentityRef != observed.Spec.IdentityRef ||
+			clusterNameFor(&latest) != clusterNameFor(observed) ||
+			(r.volumesPolicyFor(&latest) == PolicyDelete) != (r.volumesPolicyFor(observed) == PolicyDelete) {
+			return conflict("OpenStackCluster cleanup scope changed during reconciliation")
+		}
+		controllerutil.RemoveFinalizer(&latest, Finalizer)
+	}
+	patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+	if err := r.Patch(ctx, &latest, patch); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	return true, nil
 }
 
 // SetupWithManager registers the reconciler with the controller manager.
 func (r *OpenStackClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorderFor("capi-janitor")
 	}

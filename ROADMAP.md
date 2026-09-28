@@ -1135,25 +1135,25 @@ This checked list records the initial implementation pass, not replacement readi
 ### Replacement Release Work
 
 1. [x] Settle the Python `0.15.0` compatibility policy, ownership matrix, behavior matrix, and regression ledger
-2. [ ] Build and connect the typed Gophercloud resource runner after US2.1–US7.2 and US12.1–US12.4 pass
-3. [ ] Make reconciliation bounded and driven by observed state, with patches that preserve concurrent changes, secondary watches, pause handling, and leader election under US8.1–US9.1
-4. [ ] Add failure scenarios for US7.3, connect the Keystone transition, cut production over, and remove the legacy manual HTTP resource path
+2. [x] Use typed Gophercloud services to clean up floating IPs, load balancers, security groups, snapshots, and volumes. Remove the manual HTTP cleanup code
+3. [ ] Add pause handling and watches for Secrets and CAPI Clusters, and enable leader election in deployments (US8.1–US9.1)
+4. [ ] Implement the checkpoint for application credential and Secret deletion, including the failure tests in US7.3
 5. [ ] Pass envtest, Kind, real OpenStack ownership, migration, and recovery scenarios in US8.6 and US10.5
 6. [ ] Close release publication, Helm/Kustomize parity, immutable input, provenance, RC, and soak work in US10.1–US10.4
 7. [ ] Map every regression ledger row to a named Go test or tracked issue before the replacement release
 
 ## Final Result
 
-An initial Go implementation exists, but it does not yet meet the safe replacement release criteria.
-This snapshot was reviewed at `main@02e3491` on 20 August 2026.
+The controller uses typed Gophercloud services for resource cleanup and patches finalizers without overwriting concurrent changes.
+Pause handling, Secret and Cluster watches, credential deletion, and release testing are still needed.
 
 | Layer | Current state |
 |---|---|
 | OpenStack client | Gophercloud authentication and typed Neutron, Octavia, Cinder, and Keystone adapters exist. Target validation remains incomplete |
-| Active cleanup path | `purge.go` still calls legacy `Session` methods and manual HTTP models |
-| Controller | Core scaffolding exists. Reconciliation driven by observed state, watches, safe patches, and the checkpoint remain |
+| Active cleanup path | `purge.go` calls the typed resource runner. The manual HTTP cleanup code has been removed |
+| Controller | Pending cleanup is requeued. Finalizer patches use the latest object and retry conflicts on the next reconcile |
 | Packaging | Nix, SBOM, Helm, Kustomize, and GoReleaser exist. Checks across artifacts remain |
-| Full workflow evidence | Kind has an image reference gap. Real ownership and migration tests remain |
+| Full workflow evidence | Unit tests check that the finalizer is kept if cleanup settings change or the object is replaced. Envtest, Kind, OpenStack, migration, and recovery tests are still needed |
 | Replacement readiness | Not ready. Open work is tracked in Actions and the [acceptance criteria](docs/design/go-rewrite-guidelines.md#acceptance-criteria-for-the-replacement-release) |
 
 ### Test Coverage (`internal/`)
@@ -1163,7 +1163,7 @@ This snapshot was reviewed at `main@02e3491` on 20 August 2026.
 | Initial rewrite review | 4 | 168 | 93.0% |
 | `main@02e3491` review | 9 | 181 | 84.4% |
 
-`go test ./...` and `go vet ./...` pass.
+These earlier reviews ran `go test ./...` and `go vet ./...`.
 The snapshots are not directly comparable because the later tree contains more packages and typed adapters.
 Neither percentage is a release gate.
 Required evidence is tied to the User Stories and regression ledger.
@@ -1171,9 +1171,9 @@ Required evidence is tied to the User Stories and regression ledger.
 ## Implementation Order
 
 ```text
-Typed replacement data plane (required stories in Epics 1–7 and 12)
-  → bounded controller (Epic 8, US9.1)
-  → checkpoint and production cutover (US7.3)
+Resource cleanup and finalizer patches (implemented)
+  → pause handling, watches, and leader election (Epic 8, US9.1)
+  → application credential and Secret deletion with checkpoints (US7.3)
   → boundary, migration, and recovery evidence (US8.6, US10.5)
   → release acceptance (Epic 10, Epic 11)
 ```

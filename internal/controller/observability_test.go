@@ -9,8 +9,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/tools/record"
+	infrav1 "sigs.k8s.io/cluster-api-provider-openstack/api/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/cleanup"
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/controller"
@@ -97,6 +100,38 @@ func TestPendingCleanupSkipsMetricsAndEvents(t *testing.T) {
 	select {
 	case event := <-recorder.Events:
 		t.Fatalf("expected no terminal event, got %q", event)
+	default:
+	}
+}
+
+func TestFinalizerConflictDoesNotReportCleanupSuccess(t *testing.T) {
+	cluster := newCluster("c", "default", withFinalizer, withDeletionTimestamp)
+	secret := newSecret("cloud-credentials", "default")
+	patchCalls := 0
+	reconciler, _ := newReconcilerWithInterceptors(
+		func(context.Context, openstack.PurgeOptions) error { return nil },
+		interceptor.Funcs{
+			Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+				patchCalls++
+				return apierrors.NewConflict(infrav1.Resource("openstackclusters"), cluster.Name, errors.New("concurrent update"))
+			},
+		}, cluster, secret,
+	)
+	reconciler.Metrics = controller.NewMetrics(prometheus.NewRegistry())
+	recorder := record.NewFakeRecorder(10)
+	reconciler.Recorder = recorder
+	if _, err := reconciler.Reconcile(t.Context(), reconcileRequest(cluster.Name, cluster.Namespace)); !apierrors.IsConflict(err) {
+		t.Fatalf("expected a conflict for workqueue retry, got %v", err)
+	}
+	if patchCalls != 1 {
+		t.Fatalf("expected one patch attempt per reconcile, got %d", patchCalls)
+	}
+	if got := testutil.ToFloat64(reconciler.Metrics.CleanupsTotal.WithLabelValues("success")); got != 0 {
+		t.Errorf("reported cleanup success before finalizer removal: %v", got)
+	}
+	select {
+	case event := <-recorder.Events:
+		t.Fatalf("reported completion before finalizer removal: %q", event)
 	default:
 	}
 }

@@ -231,7 +231,7 @@ func (r *OpenStackClusterReconciler) patchFinalizer(ctx context.Context, observe
 		}
 		// Metadata unrelated to cleanup can change safely. A changed cleanup
 		// scope must be observed and verified before dropping the finalizer.
-		if latest.Generation != observed.Generation || latest.Spec.IdentityRef != observed.Spec.IdentityRef ||
+		if latest.Generation != observed.Generation ||
 			clusterNameFor(&latest) != clusterNameFor(observed) ||
 			(r.volumesPolicyFor(&latest) == PolicyDelete) != (r.volumesPolicyFor(observed) == PolicyDelete) {
 			return conflict("OpenStackCluster cleanup scope changed during reconciliation")

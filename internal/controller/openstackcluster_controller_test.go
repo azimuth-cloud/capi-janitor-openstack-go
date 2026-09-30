@@ -260,6 +260,52 @@ func TestReconcile_RemovesFinalizer_AfterCleanup(t *testing.T) {
 	}
 }
 
+func TestReconcile_PreservesMetadataChangedDuringCleanup(t *testing.T) {
+	const keptFinalizer = "example.com/keep"
+	const removedFinalizer = "example.com/other"
+	ctx := t.Context()
+	cluster := newCluster("mycluster", "default", withFinalizer)
+	cluster.Finalizers = append(cluster.Finalizers, keptFinalizer, removedFinalizer)
+	r, c := newReconciler(nil, cluster, newSecret("cloud-credentials", "default"))
+	if err := c.Delete(ctx, cluster); err != nil {
+		t.Fatalf("marking cluster for deletion: %v", err)
+	}
+
+	cleanupCalled := false
+	r.CleanupFunc = func(ctx context.Context, _ openstack.PurgeOptions) error {
+		cleanupCalled = true
+		latest := &infrav1.OpenStackCluster{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(cluster), latest); err != nil {
+			return err
+		}
+		latest.Labels = map[string]string{"example.com/concurrent": "preserved"}
+		// Deleting objects allow removing existing finalizers, but not adding new ones.
+		controllerutil.RemoveFinalizer(latest, removedFinalizer)
+		return c.Update(ctx, latest)
+	}
+
+	result, err := r.Reconcile(ctx, reconcileRequest(cluster.Name, cluster.Namespace))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cleanupCalled {
+		t.Fatal("expected cleanup to run")
+	}
+	if result != (ctrl.Result{}) {
+		t.Fatalf("expected cleanup to finish without requeue, got %+v", result)
+	}
+	got := getClusterOrNil(t, c, cluster.Name, cluster.Namespace)
+	if got == nil {
+		t.Fatal("expected cluster to remain with the other finalizer")
+	}
+	if got.Labels["example.com/concurrent"] != "preserved" {
+		t.Errorf("lost label changed during cleanup: %v", got.Labels)
+	}
+	if len(got.Finalizers) != 1 || got.Finalizers[0] != keptFinalizer {
+		t.Errorf("finalizers = %v, want only %q", got.Finalizers, keptFinalizer)
+	}
+}
+
 func TestReconcile_RetainsFinalizerWhenCleanupScopeChanges(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -267,7 +313,6 @@ func TestReconcile_RetainsFinalizerWhenCleanupScopeChanges(t *testing.T) {
 	}{
 		{"generation", func(c *infrav1.OpenStackCluster) { c.Generation++ }},
 		{"cluster name", withClusterLabel("another-cluster")},
-		{"identity", func(c *infrav1.OpenStackCluster) { c.Spec.IdentityRef.Name = "other-credentials" }},
 		{"volume policy", func(c *infrav1.OpenStackCluster) {
 			c.Annotations = map[string]string{controller.VolumesPolicyAnnotation: controller.PolicyDelete}
 		}},

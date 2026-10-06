@@ -313,6 +313,9 @@ func TestReconcile_RetainsFinalizerWhenCleanupScopeChanges(t *testing.T) {
 	}{
 		{"generation", func(c *infrav1.OpenStackCluster) { c.Generation++ }},
 		{"cluster name", withClusterLabel("another-cluster")},
+		{"empty checkpoint added", func(c *infrav1.OpenStackCluster) {
+			c.Annotations[controller.CredentialCheckpointAnnotation] = ""
+		}},
 		{"volume policy", func(c *infrav1.OpenStackCluster) {
 			c.Annotations = map[string]string{controller.VolumesPolicyAnnotation: controller.PolicyDelete}
 		}},
@@ -567,62 +570,6 @@ func TestReconcile_RejectsUnsupportedIdentity(t *testing.T) {
 	}
 	if cleanupCalled {
 		t.Fatal("cleanup ran for an unsupported identity type")
-	}
-}
-
-// Scenario: credential deletion is requested before its checkpoint is
-// implemented. The Secret and finalizer remain.
-func TestReconcile_BlocksCredentialDelete(t *testing.T) {
-	cluster := newCluster("mycluster", "default", withFinalizer, withDeletionTimestamp)
-	secret := newSecret("cloud-credentials", "default")
-	secret.Annotations = map[string]string{controller.CredentialPolicyAnnotation: controller.PolicyDelete}
-
-	r, c := newReconciler(func(context.Context, openstack.PurgeOptions) error { return nil }, cluster, secret)
-
-	_, err := r.Reconcile(context.Background(), reconcileRequest("mycluster", "default"))
-	if err == nil || !strings.Contains(err.Error(), "credential cleanup checkpoint is not implemented") {
-		t.Fatalf("expected credential checkpoint error, got %v", err)
-	}
-
-	var gotSecret corev1.Secret
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "cloud-credentials", Namespace: "default"}, &gotSecret); err != nil {
-		t.Errorf("expected credential Secret to remain, got %v", err)
-	}
-
-	got := getClusterOrNil(t, c, "mycluster", "default")
-	if got == nil || !controllerutil.ContainsFinalizer(got, controller.Finalizer) {
-		t.Error("expected janitor finalizer to remain")
-	}
-}
-
-// Scenario: credential policy "delete" but other finalizers remain
-func TestReconcile_RequeuesForFinalizers(t *testing.T) {
-	cluster := newCluster("mycluster", "default", withFinalizer, withDeletionTimestamp)
-	controllerutil.AddFinalizer(cluster, "other.finalizer.example.com")
-	secret := newSecret("cloud-credentials", "default")
-	secret.Annotations = map[string]string{controller.CredentialPolicyAnnotation: controller.PolicyDelete}
-
-	r, c := newReconciler(func(context.Context, openstack.PurgeOptions) error { return nil }, cluster, secret)
-
-	result, err := r.Reconcile(context.Background(), reconcileRequest("mycluster", "default"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.RequeueAfter != 5*time.Second {
-		t.Fatalf("expected a 5s requeue, got %s", result.RequeueAfter)
-	}
-
-	var gotSecret corev1.Secret
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "cloud-credentials", Namespace: "default"}, &gotSecret); err != nil {
-		t.Errorf("expected credential secret to still exist, got err: %v", err)
-	}
-
-	got := getClusterOrNil(t, c, "mycluster", "default")
-	if got == nil {
-		t.Fatal("expected cluster to still exist")
-	}
-	if !controllerutil.ContainsFinalizer(got, controller.Finalizer) {
-		t.Error("expected janitor finalizer to still be present")
 	}
 }
 

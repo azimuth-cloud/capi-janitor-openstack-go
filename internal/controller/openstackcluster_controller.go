@@ -70,6 +70,8 @@ type OpenStackClusterReconciler struct {
 	// CleanupFunc cleans up OpenStack resources. It defaults to
 	// openstack.PurgeResources.
 	CleanupFunc func(context.Context, openstack.PurgeOptions) error
+	// NewSession binds resource verification and credential deletion to one cloud.
+	NewSession func(context.Context, openstack.PurgeOptions) (openstack.CleanupSession, error)
 }
 
 func (r *OpenStackClusterReconciler) cleanResources(ctx context.Context, options openstack.PurgeOptions) error {
@@ -120,7 +122,7 @@ func (r *OpenStackClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Not deleting: ensure our finalizer is present.
 	if cluster.DeletionTimestamp.IsZero() {
 		if !controllerutil.ContainsFinalizer(&cluster, Finalizer) {
-			changed, err := r.patchFinalizer(ctx, &cluster, true)
+			changed, err := r.addFinalizer(ctx, &cluster)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 			}
@@ -137,73 +139,18 @@ func (r *OpenStackClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
-	if identityType := cluster.Spec.IdentityRef.Type; identityType != "" && identityType != "Secret" {
-		return ctrl.Result{}, fmt.Errorf("unsupported identity reference type %q", identityType)
+	result, err := r.reconcileDelete(ctx, &cluster)
+	if errors.Is(err, errPaused) || apierrors.IsNotFound(err) {
+		return ctrl.Result{}, nil
 	}
-	if cluster.Spec.IdentityRef.Name == "" {
-		return ctrl.Result{}, errors.New("identity Secret name is empty")
+	if errors.Is(err, cleanup.ErrDeletePending) {
+		return ctrl.Result{RequeueAfter: pendingDeleteDelay}, nil
 	}
-
-	// Fetch the cloud credential secret.
-	secret, err := r.findSecret(ctx, cluster.Spec.IdentityRef.Name, req.Namespace)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("fetching identity secret: %w", err)
-	}
-	if secret == nil {
-		return ctrl.Result{}, fmt.Errorf("identity Secret %q not found", cluster.Spec.IdentityRef.Name)
-	}
-
-	cloudsYAML := string(secret.Data["clouds.yaml"])
-	caCert := string(secret.Data["cacert"])
-
-	cloudName := cluster.Spec.IdentityRef.CloudName
-	if cloudName == "" {
-		cloudName = "openstack"
-	}
-
-	deleteVolumes := r.volumesPolicyFor(&cluster) == PolicyDelete
-
-	credentialPolicy := secret.Annotations[CredentialPolicyAnnotation]
-
-	cleanupErr := r.cleanResources(ctx, openstack.PurgeOptions{
-		CloudsYAML:    cloudsYAML,
-		CloudName:     cloudName,
-		CACert:        caCert,
-		ClusterName:   clusterName,
-		DeleteVolumes: deleteVolumes,
-	})
-	if cleanupErr != nil {
-		if errors.Is(cleanupErr, cleanup.ErrDeletePending) {
-			logger.Info("OpenStack resource deletion is still in progress")
-			return ctrl.Result{RequeueAfter: pendingDeleteDelay}, nil
-		}
+	if err != nil && !apierrors.IsConflict(err) {
 		r.countCleanup("failure")
-		r.recordEvent(&cluster, corev1.EventTypeWarning, "CleanupFailed", cleanupErr.Error())
-		return ctrl.Result{}, fmt.Errorf("cleaning OpenStack resources: %w", cleanupErr)
+		r.recordEvent(&cluster, corev1.EventTypeWarning, "CleanupFailed", err.Error())
 	}
-
-	// Credential deletion is the next implementation phase. Keep the Secret and
-	// finalizer until that transition has its persistent checkpoint.
-	if credentialPolicy == PolicyDelete {
-		if len(cluster.Finalizers) > 1 {
-			blockingFinalizer := findOtherFinalizer(cluster.Finalizers, Finalizer)
-			logger.Info("Waiting for another finalizer before deleting the application credential", "otherFinalizer", blockingFinalizer)
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-		return ctrl.Result{}, errors.New("application credential cleanup checkpoint is not implemented")
-	}
-
-	// Remove our finalizer.
-	changed, err := r.patchFinalizer(ctx, &cluster, false)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
-	}
-	if changed {
-		r.countCleanup("success")
-		r.recordEvent(&cluster, corev1.EventTypeNormal, "CleanupSucceeded", "OpenStack resources cleaned up successfully")
-		logger.Info("Removed Janitor finalizer from OpenStackCluster")
-	}
-	return ctrl.Result{}, nil
+	return result, err
 }
 
 func (r *OpenStackClusterReconciler) reader() client.Reader {
@@ -213,49 +160,43 @@ func (r *OpenStackClusterReconciler) reader() client.Reader {
 	return r.Client
 }
 
-// patchFinalizer changes only the Janitor finalizer on the latest object.
-// Conflicts go back to the workqueue so a later reconcile observes state and
-// verifies cleanup again, without sleeping or retrying inside reconciliation.
-func (r *OpenStackClusterReconciler) patchFinalizer(ctx context.Context, observed *infrav1.OpenStackCluster, add bool) (bool, error) {
-	reader := r.reader()
+func (r *OpenStackClusterReconciler) finishCleanup(ctx context.Context, observed *infrav1.OpenStackCluster, secret *corev1.Secret, soleFinalizer bool) (ctrl.Result, error) {
+	latest, err := r.checkCleanupInputs(ctx, observed, secret, soleFinalizer)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// Use the resourceVersion from checkCleanupInputs to detect concurrent changes.
+	base := latest.DeepCopy()
+	controllerutil.RemoveFinalizer(latest, Finalizer)
+	if err := r.Patch(ctx, latest, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+	}
+	r.countCleanup("success")
+	r.recordEvent(latest, corev1.EventTypeNormal, "CleanupSucceeded", "OpenStack resources cleaned up successfully")
+	log.FromContext(ctx).Info("Removed Janitor finalizer from OpenStackCluster")
+	return ctrl.Result{}, nil
+}
+
+// addFinalizer patches the latest object and checks for concurrent changes.
+func (r *OpenStackClusterReconciler) addFinalizer(ctx context.Context, observed *infrav1.OpenStackCluster) (bool, error) {
 	var latest infrav1.OpenStackCluster
-	if err := reader.Get(ctx, client.ObjectKeyFromObject(observed), &latest); err != nil {
+	if err := r.reader().Get(ctx, client.ObjectKeyFromObject(observed), &latest); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
-	conflict := func(message string) (bool, error) {
-		return false, apierrors.NewConflict(
-			infrav1.SchemeGroupVersion.WithResource("openstackclusters").GroupResource(), observed.Name, errors.New(message),
-		)
-	}
 	if latest.UID != observed.UID {
-		return conflict("OpenStackCluster was replaced during reconciliation")
+		return false, apierrors.NewConflict(infrav1.Resource("openstackclusters"), observed.Name,
+			errors.New("OpenStackCluster was replaced during reconciliation"))
 	}
-
+	if !latest.DeletionTimestamp.IsZero() || controllerutil.ContainsFinalizer(&latest, Finalizer) {
+		return false, nil
+	}
 	paused, err := r.isPaused(ctx, &latest)
 	if err != nil || paused {
 		return false, err
 	}
 	base := latest.DeepCopy()
-	if add {
-		// Deletion may have started since reconciliation began.
-		if !latest.DeletionTimestamp.IsZero() || !controllerutil.AddFinalizer(&latest, Finalizer) {
-			return false, nil
-		}
-	} else {
-		if !controllerutil.ContainsFinalizer(&latest, Finalizer) {
-			return false, nil
-		}
-		// Metadata unrelated to cleanup can change safely. A changed cleanup
-		// scope must be observed and verified before dropping the finalizer.
-		if latest.Generation != observed.Generation ||
-			clusterNameFor(&latest) != clusterNameFor(observed) ||
-			(r.volumesPolicyFor(&latest) == PolicyDelete) != (r.volumesPolicyFor(observed) == PolicyDelete) {
-			return conflict("OpenStackCluster cleanup scope changed during reconciliation")
-		}
-		controllerutil.RemoveFinalizer(&latest, Finalizer)
-	}
-	patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
-	if err := r.Patch(ctx, &latest, patch); err != nil {
+	controllerutil.AddFinalizer(&latest, Finalizer)
+	if err := r.Patch(ctx, &latest, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
 	return true, nil
@@ -295,14 +236,20 @@ func clusterNameFor(cluster *infrav1.OpenStackCluster) string {
 	return cluster.Name
 }
 
+// volumesPolicyFor resolves the effective policy for both cleanup and checkpoints.
+// Only "delete" enables deletion. Every other value keeps volumes.
 func (r *OpenStackClusterReconciler) volumesPolicyFor(cluster *infrav1.OpenStackCluster) string {
+	policy := r.DefaultVolumesPolicy
+	if policy == "" {
+		policy = PolicyDelete
+	}
 	if ann, ok := cluster.Annotations[VolumesPolicyAnnotation]; ok {
-		return ann
+		policy = ann
 	}
-	if r.DefaultVolumesPolicy != "" {
-		return r.DefaultVolumesPolicy
+	if policy == PolicyDelete {
+		return PolicyDelete
 	}
-	return PolicyDelete
+	return "keep"
 }
 
 func (r *OpenStackClusterReconciler) maxRetryDelay() time.Duration {
@@ -322,15 +269,6 @@ func (r *OpenStackClusterReconciler) findSecret(ctx context.Context, name, names
 		return nil, err
 	}
 	return &secret, nil
-}
-
-func findOtherFinalizer(finalizers []string, excluded string) string {
-	for _, finalizer := range finalizers {
-		if finalizer != excluded {
-			return finalizer
-		}
-	}
-	return ""
 }
 
 // DefaultVolumesFromEnv reads CAPI_JANITOR_DEFAULT_VOLUMES_POLICY from environment.

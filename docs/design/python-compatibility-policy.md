@@ -122,8 +122,17 @@ The credential transition requires all of the following:
 - the selected cloud is the same explicit `v3applicationcredential` cloud used for cleanup
 - the Janitor finalizer is the only remaining finalizer
 - a fresh complete inventory verifies that no owned resource remains
+- no other `OpenStackCluster` in the same namespace directly references the Secret
 
 When the annotation is absent or is not exact `delete`, the application credential and Secret are preserved.
+The delete annotation is for a Secret and application credential dedicated to this cluster.
+
+Before saving the first checkpoint, the controller lists `OpenStackCluster` objects directly from the API server.
+A different object UID in the same namespace with the same `identityRef.name` and type `Secret` or an empty type counts as another reference.
+The check includes paused and deleting clusters and does not require a matching `cloudName`.
+If another reference exists, the controller preserves the credential and Secret and removes only its own finalizer after resource cleanup and the usual input and finalizer checks.
+It does not create a checkpoint in this case.
+A list failure returns an error and retains the finalizer without deleting the credential or Secret.
 
 The controller records a versioned checkpoint on the `OpenStackCluster` before each irreversible transition:
 
@@ -134,6 +143,9 @@ The controller records a versioned checkpoint on the `OpenStackCluster` before e
 The checkpoint binds the cluster UID and effective name, normalized Keystone authority, project and region, direct Secret UID, selected cloud, exact application credential ID, and resolved cleanup policies.
 It contains no Secret data.
 
+On resume, the controller checks for other references again before each credential or Secret DELETE.
+Another reference leaves the checkpoint and finalizer in place and defers further deletion with a five-second requeue.
+
 An application credential DELETE `401`, `403`, timeout, rate limit, server error, or unclassified response does not advance the checkpoint.
 The controller retains the Secret and finalizer, reports blocked cleanup, and retries the exact operation or waits for manual recovery.
 An initial authentication failure, catalog failure, or Keystone base-URL `404` never proves that the credential is absent.
@@ -142,6 +154,12 @@ A missing Secret before `secretDeleteStarted` blocks cleanup.
 A missing Secret after `secretDeleteStarted` is an idempotent completion of the recorded Secret deletion.
 Before `credentialDeleteStarted`, a valid change within the same ownership boundary requires full verification again.
 At or after `credentialDeleteStarted`, any binding change remains blocked for manual recovery.
+
+The reference check covers only direct Secret references in the same namespace.
+It does not resolve `ClusterIdentity` references or find the same application credential copied into other Secrets.
+Listing references and deleting a credential or Secret are separate operations, so do not create or rebind references after credential cleanup starts.
+The guard cannot restore a credential that has already been deleted.
+If two clusters are deleted concurrently, both may observe the other reference, preserve the credential and Secret, and finish their own cleanup, leaving the shared credential and Secret for manual cleanup.
 
 ## Retry and change control
 

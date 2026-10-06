@@ -246,8 +246,10 @@ Positive conditions:
 - the Secret annotation `janitor.capi.stackhpc.com/credential-policy` is `delete`
 - the Janitor finalizer is the only remaining finalizer
 - all other required resources have been verified absent
+- no other `OpenStackCluster` in the same namespace directly references the Secret
 
 Any missing condition means that the credential and Secret are not deleted in that reconcile.
+See the [credential cleanup policy](python-compatibility-policy.md#application-credential-cleanup) for shared Secret handling and the limits of the reference check.
 
 ## Discovery and deletion rules
 

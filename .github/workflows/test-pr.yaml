@@ -2,14 +2,7 @@ name: Integration tests
 
 on:
   # We use pull_request_target so that dependabot-created workflows can run
-  pull_request_target:
-    types:
-      - opened
-      - synchronize
-      - ready_for_review
-      - reopened
-    branches:
-      - main
+  pull_request:
 
 # Use the head ref for workflow concurrency, with cancellation
 # This should mean that any previous workflows for a PR get cancelled when a new commit is pushed
@@ -52,28 +45,9 @@ jobs:
               - '.github/workflows/build-push-artifacts.yaml'
               - '.github/workflows/test-pr.yaml'
 
-  # Privileged integration tests are limited to branches in this repository.
-  # Forks still receive the unprivileged lint and unit-test workflows.
-  source:
-    runs-on: ubuntu-latest
-    permissions: {}
-    outputs:
-      internal: ${{ steps.check.outputs.internal }}
-    steps:
-      - name: Check whether the PR branch belongs to this repository
-        id: check
-        env:
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-        run: |
-          if [[ "$HEAD_REPOSITORY" == "azimuth-cloud/capi-janitor-openstack-go" ]]; then
-            echo "internal=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "internal=false" >> "$GITHUB_OUTPUT"
-          fi
-
   publish_artifacts:
-    needs: [changes, source]
-    if: needs.changes.outputs.integration == 'true' && needs.source.outputs.internal == 'true'
+    needs: [changes]
+    if: needs.changes.outputs.integration == 'true'
     uses: ./.github/workflows/build-push-artifacts.yaml
     with:
       ref: ${{ github.event.pull_request.head.sha }}

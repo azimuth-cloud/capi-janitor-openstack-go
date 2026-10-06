@@ -60,7 +60,7 @@ const (
 // OpenStackClusterReconciler reconciles OpenStackCluster objects from CAPO.
 type OpenStackClusterReconciler struct {
 	client.Client
-	// APIReader bypasses the cache before changing finalizers.
+	// APIReader reads current cleanup inputs and metadata before mutations.
 	APIReader            client.Reader
 	Scheme               *runtime.Scheme
 	DefaultVolumesPolicy string
@@ -92,22 +92,30 @@ func (r *OpenStackClusterReconciler) recordEvent(obj client.Object, eventType, r
 }
 
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=openstackclusters,verbs=get;list;watch;patch;update
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;delete
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;delete
 //+kubebuilder:rbac:groups="",resources=namespaces,verbs=list;watch
-//+kubebuilder:rbac:groups="",resources=events,verbs=create
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch
 //+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
 func (r *OpenStackClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	var cluster infrav1.OpenStackCluster
-	if err := r.Get(ctx, req.NamespacedName, &cluster); err != nil {
+	if err := r.reader().Get(ctx, req.NamespacedName, &cluster); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	clusterName := clusterNameFor(&cluster)
 	logger = logger.WithValues("clusterName", clusterName)
 	logger.V(1).Info("reconciling OpenStackCluster")
+	paused, err := r.isPaused(ctx, &cluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if paused {
+		return ctrl.Result{}, nil
+	}
 
 	// Not deleting: ensure our finalizer is present.
 	if cluster.DeletionTimestamp.IsZero() {
@@ -198,14 +206,18 @@ func (r *OpenStackClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return ctrl.Result{}, nil
 }
 
+func (r *OpenStackClusterReconciler) reader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
+}
+
 // patchFinalizer changes only the Janitor finalizer on the latest object.
 // Conflicts go back to the workqueue so a later reconcile observes state and
 // verifies cleanup again, without sleeping or retrying inside reconciliation.
 func (r *OpenStackClusterReconciler) patchFinalizer(ctx context.Context, observed *infrav1.OpenStackCluster, add bool) (bool, error) {
-	reader := r.APIReader
-	if reader == nil {
-		reader = r.Client
-	}
+	reader := r.reader()
 	var latest infrav1.OpenStackCluster
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(observed), &latest); err != nil {
 		return false, client.IgnoreNotFound(err)
@@ -219,9 +231,13 @@ func (r *OpenStackClusterReconciler) patchFinalizer(ctx context.Context, observe
 		return conflict("OpenStackCluster was replaced during reconciliation")
 	}
 
+	paused, err := r.isPaused(ctx, &latest)
+	if err != nil || paused {
+		return false, err
+	}
 	base := latest.DeepCopy()
 	if add {
-		// Deletion may have started since the cached read at reconcile entry.
+		// Deletion may have started since reconciliation began.
 		if !latest.DeletionTimestamp.IsZero() || !controllerutil.AddFinalizer(&latest, Finalizer) {
 			return false, nil
 		}
@@ -256,15 +272,18 @@ func (r *OpenStackClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Metrics == nil {
 		r.Metrics = NewMetrics(ctrlmetrics.Registry)
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.OpenStackCluster{}).
 		WithOptions(ctrlcontroller.Options{
 			RateLimiter: workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](
 				retryBaseDelay,
 				r.maxRetryDelay(),
 			),
-		}).
-		Complete(r)
+		})
+	if err := r.setupLifecycleWatches(mgr, b); err != nil {
+		return err
+	}
+	return b.Complete(r)
 }
 
 // clusterNameFor returns the cluster name to use for resource cleanup.
@@ -296,7 +315,7 @@ func (r *OpenStackClusterReconciler) maxRetryDelay() time.Duration {
 
 func (r *OpenStackClusterReconciler) findSecret(ctx context.Context, name, namespace string) (*corev1.Secret, error) {
 	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &secret); err != nil {
+	if err := r.reader().Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}

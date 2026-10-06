@@ -24,6 +24,8 @@ spec:
           securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
           image: {{ printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --leader-elect
           env:
             - name: CAPI_JANITOR_DEFAULT_VOLUMES_POLICY
               value: {{ .Values.defaultVolumesPolicy }}

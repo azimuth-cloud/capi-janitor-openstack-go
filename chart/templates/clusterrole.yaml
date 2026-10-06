@@ -18,13 +18,24 @@ rules:
       - events
     verbs:
       - create
+      - patch
   - apiGroups:
       - ""
     resources:
       - secrets
     verbs:
       - get
+      - list
+      - watch
       - delete
+  - apiGroups:
+      - cluster.x-k8s.io
+    resources:
+      - clusters
+    verbs:
+      - get
+      - list
+      - watch
   - apiGroups:
       - infrastructure.cluster.x-k8s.io
     resources:

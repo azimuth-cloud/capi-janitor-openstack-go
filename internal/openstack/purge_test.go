@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
+
+	"github.com/gophercloud/gophercloud/v2"
 
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/cleanup"
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/openstack"
@@ -18,17 +21,20 @@ import (
 type cleanupFixture struct {
 	server *httptest.Server
 
-	mu               sync.Mutex
-	networkInCatalog bool
-	octaviaInCatalog bool
-	cinderInCatalog  bool
-	floatingIPs      []map[string]any
-	loadBalancers    []map[string]any
-	securityGroups   []map[string]any
-	snapshots        []map[string]any
-	volumes          []map[string]any
-	requestLog       []string
-	deletePaths      []string
+	mu                     sync.Mutex
+	networkInCatalog       bool
+	octaviaInCatalog       bool
+	cinderInCatalog        bool
+	floatingIPs            []map[string]any
+	loadBalancers          []map[string]any
+	securityGroups         []map[string]any
+	snapshots              []map[string]any
+	volumes                []map[string]any
+	requestLog             []string
+	deletePaths            []string
+	credentialDeleteStatus int
+	credentialDeleteError  string
+	inventoryError         string
 }
 
 func newCleanupFixture(t *testing.T) *cleanupFixture {
@@ -70,7 +76,7 @@ func newCleanupFixture(t *testing.T) *cleanupFixture {
 		cinderInCatalog := fixture.cinderInCatalog
 		fixture.mu.Unlock()
 
-		catalog := make([]any, 0, 3)
+		catalog := []any{newCatalogEntry("identity", fixture.server.URL+"/v3/")}
 		if networkInCatalog {
 			catalog = append(catalog, newCatalogEntry("network", fixture.server.URL+"/network/"))
 		}
@@ -81,6 +87,29 @@ func newCleanupFixture(t *testing.T) *cleanupFixture {
 			catalog = append(catalog, newCatalogEntry("volumev3", fixture.server.URL+"/cinder/v3/project-1/"))
 		}
 		writeJSON(t, w, http.StatusOK, map[string]any{"catalog": catalog})
+	})
+	mux.HandleFunc("/v3/users/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("unexpected credential request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if got := r.Header.Get("X-Auth-Token"); got != "token-1" {
+			t.Errorf("credential deletion used token %q", got)
+		}
+		fixture.mu.Lock()
+		fixture.deletePaths = append(fixture.deletePaths, r.URL.Path)
+		status := fixture.credentialDeleteStatus
+		errorBody := fixture.credentialDeleteError
+		fixture.mu.Unlock()
+		if status == 0 {
+			status = http.StatusNoContent
+		}
+		if errorBody != "" {
+			http.Error(w, errorBody, status)
+			return
+		}
+		w.WriteHeader(status)
 	})
 	mux.HandleFunc("/network/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
@@ -129,7 +158,12 @@ func (f *cleanupFixture) newListHandler(
 		}
 		f.mu.Lock()
 		items := slices.Clone(getItems())
+		errorBody := f.inventoryError
 		f.mu.Unlock()
+		if errorBody != "" {
+			http.Error(w, errorBody, http.StatusInternalServerError)
+			return
+		}
 		writeJSON(t, w, http.StatusOK, map[string]any{responseKey: items})
 	}
 }
@@ -338,5 +372,209 @@ func TestPurgeResourcesUsesCinderForVolumes(t *testing.T) {
 	defer missingCinder.mu.Unlock()
 	if len(missingCinder.deletePaths) != 0 {
 		t.Fatalf("expected missing Cinder to block every mutation, got %v", missingCinder.deletePaths)
+	}
+}
+
+func TestCleanupSessionUsesSameCredentialForCleanupAndDeletion(t *testing.T) {
+	fixture := newCleanupFixture(t)
+	options := fixture.buildOptions()
+	session, err := openstack.NewCleanupSession(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := openstack.CredentialBinding{
+		Authority: fixture.server.URL + "/v3", UserID: "user-1", ProjectID: "project-1",
+		CredentialID: "appcred-1", Region: "RegionOne", Interface: "public", CloudName: "openstack",
+	}
+	if got := session.Binding(); got != want {
+		t.Fatalf("binding = %+v, want %+v", got, want)
+	}
+	if err := session.Cleanup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.DeleteApplicationCredential(context.Background(), "different-credential"); err == nil {
+		t.Fatal("session accepted a different application credential ID")
+	}
+	if err := session.DeleteApplicationCredential(context.Background(), "appcred-1"); err != nil {
+		t.Fatal(err)
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	wantPath := fmt.Sprintf("/v3/users/%s/application_credentials/%s", want.UserID, want.CredentialID)
+	wantDeletes := []string{wantPath}
+	if !slices.Equal(fixture.deletePaths, wantDeletes) {
+		t.Fatalf("deletions = %v, want %v", fixture.deletePaths, wantDeletes)
+	}
+	authCalls := 0
+	for _, request := range fixture.requestLog {
+		if request == "POST /v3/auth/tokens" {
+			authCalls++
+		}
+	}
+	if authCalls != 1 {
+		t.Fatalf("cleanup and credential deletion made %d authentication requests, want 1", authCalls)
+	}
+}
+
+func TestCleanupSessionCredentialReplayDoesNotRequireResourceEndpoints(t *testing.T) {
+	for _, status := range []int{204, 404, 200, 202, 403, 409, 500} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			fixture := newCleanupFixture(t)
+			fixture.networkInCatalog, fixture.octaviaInCatalog, fixture.cinderInCatalog = false, false, false
+			fixture.credentialDeleteStatus = status
+			options := fixture.buildOptions()
+			options.DeleteVolumes = true
+			session, err := openstack.NewCleanupSession(context.Background(), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = session.DeleteApplicationCredential(context.Background(), "appcred-1")
+			wantSuccess := status == 204 || status == 404
+			if (err == nil) != wantSuccess {
+				t.Fatalf("credential deletion returned %v for HTTP %d", err, status)
+			}
+			if status == 403 && !errors.Is(err, cleanup.ErrApplicationCredentialForbidden) {
+				t.Fatalf("credential forbidden error lost classification: %v", err)
+			}
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			for _, request := range fixture.requestLog {
+				if !strings.Contains(request, "/v3/") {
+					t.Fatalf("credential replay contacted a resource endpoint: %s", request)
+				}
+			}
+		})
+	}
+}
+
+func TestCleanupSessionRedactsServiceErrors(t *testing.T) {
+	const credentialSecret = "private-credential-value"
+	const errorBody = "request failed with " + credentialSecret + " and token-1"
+	for _, test := range []struct {
+		name             string
+		deleteCredential bool
+		status           int
+	}{
+		{"resource inventory", false, http.StatusInternalServerError},
+		{"credential deletion", true, http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCleanupFixture(t)
+			if test.deleteCredential {
+				fixture.credentialDeleteStatus = test.status
+				fixture.credentialDeleteError = errorBody
+			} else {
+				fixture.inventoryError = errorBody
+			}
+			options := fixture.buildOptions()
+			options.CloudsYAML = strings.Replace(options.CloudsYAML, "secret: secret", "secret: "+credentialSecret, 1)
+			session, err := openstack.NewCleanupSession(context.Background(), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.deleteCredential {
+				err = session.DeleteApplicationCredential(context.Background(), "appcred-1")
+			} else {
+				err = session.Cleanup(context.Background())
+			}
+			if err == nil {
+				t.Fatal("expected service error")
+			}
+			for _, sensitive := range []string{credentialSecret, "token-1"} {
+				if strings.Contains(err.Error(), sensitive) {
+					t.Fatalf("service error exposed credential material: %v", err)
+				}
+			}
+			var responseErr gophercloud.ErrUnexpectedResponseCode
+			if !errors.As(err, &responseErr) || responseErr.Actual != test.status {
+				t.Fatalf("redaction lost HTTP error classification: %v", err)
+			}
+			if test.deleteCredential && !errors.Is(err, cleanup.ErrApplicationCredentialForbidden) {
+				t.Fatalf("redaction lost credential forbidden classification: %v", err)
+			}
+		})
+	}
+}
+
+func TestDescribeCredentialDoesNotAuthenticate(t *testing.T) {
+	fixture := newCleanupFixture(t)
+	config, err := openstack.DescribeCredential(fixture.buildOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.CredentialID != "appcred-1" || config.Authority != fixture.server.URL+"/v3" {
+		t.Fatalf("incorrect credential description: %+v", config)
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.requestLog) != 0 {
+		t.Fatalf("offline description made requests: %v", fixture.requestLog)
+	}
+}
+
+func TestCleanupSessionRejectsEmptyClusterBeforeAuthentication(t *testing.T) {
+	fixture := newCleanupFixture(t)
+	options := fixture.buildOptions()
+	options.ClusterName = " "
+	if _, err := openstack.NewCleanupSession(context.Background(), options); err == nil {
+		t.Fatal("expected empty cluster name to be rejected")
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.requestLog) != 0 {
+		t.Fatalf("empty cluster name made requests: %v", fixture.requestLog)
+	}
+}
+
+func TestValidateCredentialBindingWithoutSecret(t *testing.T) {
+	valid := openstack.CredentialBinding{
+		Authority: "https://identity.example/deployment/v3", UserID: "user-1", ProjectID: "project-1",
+		CloudName: "selected", CredentialID: "appcred-1", Interface: "public",
+	}
+	if err := openstack.ValidateCredentialBinding(valid); err != nil {
+		t.Fatalf("valid binding with no region: %v", err)
+	}
+	for _, iface := range []string{"public", "internal", "admin"} {
+		binding := valid
+		binding.Interface, binding.Region = iface, "RegionOne"
+		if err := openstack.ValidateCredentialBinding(binding); err != nil {
+			t.Fatalf("valid binding with interface %s: %v", iface, err)
+		}
+	}
+
+	for _, test := range []struct {
+		name   string
+		change func(*openstack.CredentialBinding)
+	}{
+		{"missing authority", func(b *openstack.CredentialBinding) { b.Authority = "" }},
+		{"invalid authority", func(b *openstack.CredentialBinding) { b.Authority = "not-a-url" }},
+		{"URL user information", func(b *openstack.CredentialBinding) { b.Authority = "https://user:private-value@identity.example/v3" }},
+		{"URL query", func(b *openstack.CredentialBinding) { b.Authority = "https://identity.example/v3?token=private-value" }},
+		{"empty URL query", func(b *openstack.CredentialBinding) { b.Authority = "https://identity.example/v3?" }},
+		{"URL fragment", func(b *openstack.CredentialBinding) { b.Authority = "https://identity.example/v3#private-value" }},
+		{"noncanonical authority", func(b *openstack.CredentialBinding) { b.Authority = "https://IDENTITY.example:443/v3/" }},
+		{"unsupported interface", func(b *openstack.CredentialBinding) { b.Interface = "private-value" }},
+		{"missing interface", func(b *openstack.CredentialBinding) { b.Interface = "" }},
+		{"missing project ID", func(b *openstack.CredentialBinding) { b.ProjectID = "" }},
+		{"blank user ID", func(b *openstack.CredentialBinding) { b.UserID = " " }},
+		{"untrimmed user ID", func(b *openstack.CredentialBinding) { b.UserID = " private-value" }},
+		{"untrimmed project ID", func(b *openstack.CredentialBinding) { b.ProjectID = "private-value " }},
+		{"untrimmed cloud name", func(b *openstack.CredentialBinding) { b.CloudName = "private-value " }},
+		{"missing cloud name", func(b *openstack.CredentialBinding) { b.CloudName = "" }},
+		{"untrimmed credential ID", func(b *openstack.CredentialBinding) { b.CredentialID = " private-value" }},
+		{"missing credential ID", func(b *openstack.CredentialBinding) { b.CredentialID = "" }},
+		{"untrimmed region", func(b *openstack.CredentialBinding) { b.Region = " private-value" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			binding := valid
+			test.change(&binding)
+			err := openstack.ValidateCredentialBinding(binding)
+			if err == nil {
+				t.Fatal("malformed binding accepted")
+			}
+			if strings.Contains(err.Error(), "private-value") {
+				t.Fatalf("validation error included input value: %v", err)
+			}
+		})
 	}
 }

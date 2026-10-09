@@ -48,8 +48,7 @@ They are not expected to contain identical binaries.
 
 ## Before tagging
 
-1. Confirm the release acceptance criteria in
-   [the Go rewrite guidelines](design/go-rewrite-guidelines.md) are satisfied.
+1. For the first Python replacement release, confirm the [replacement work list](../ROADMAP.md#replacement-release-work), including a passing [Azimuth integration run and migration check](integration-testing.md).
 2. Confirm CI is green, including the `GoReleaser snapshot` job. This snapshot
    builds archives, checksums, and the Kubernetes bundle without publishing
    anything.

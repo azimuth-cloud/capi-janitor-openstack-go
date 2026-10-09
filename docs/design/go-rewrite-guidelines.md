@@ -275,8 +275,8 @@ It should not be guessed in code.
 
 ## Acceptance criteria for the replacement release
 
-The replacement release is ready when the following criteria are met.
-These are release acceptance criteria rather than an implementation progress checklist.
+For the first Python replacement release, use the [current work list](../../ROADMAP.md#replacement-release-work) and the [Azimuth validation steps](../integration-testing.md).
+The criteria below describe the expected behavior. They do not require the same scenario to be repeated in unit tests, envtest, Kind, and real OpenStack.
 
 - the compatibility policy and design documents match the shipped behavior
 - every ownership rule has positive and negative tests
@@ -288,4 +288,4 @@ These are release acceptance criteria rather than an implementation progress che
 - cleanup can resume after a process restart
 - envtest covers Kubernetes controller behavior
 - a real OpenStack test covers both cleanup and preservation
-- migration from the Python controller and deployment rollback with no active deletion have been tested in a representative environment
+- migration from the Python controller has been tested in a representative environment

@@ -200,6 +200,10 @@ These tests require the `envtest` build tag and run in a separate CI job.
 They cover finalizer conflicts, pause and resume, Secret changes, checkpoint restarts, and Secret replacement.
 OpenStack calls in these tests use a test session. Tests against a real cloud are still required before release.
 
+The existing Azimuth integration workflow also runs the [Janitor acceptance tests](docs/integration-testing.md).
+It keeps the normal Kubernetes cluster tests and adds real OpenStack fixtures to check resource deletion, shared load balancer preservation, volume policies, and application credential cleanup.
+The additional checks use the Go controller deployed by the workflow. They do not run during `make test`.
+
 Current test evidence and the gaps that aggregate coverage cannot close are tracked in the [roadmap](ROADMAP.md#final-result).
 
 ### Lint and format

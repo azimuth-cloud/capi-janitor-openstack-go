@@ -962,8 +962,7 @@ Feature: Verified Replacement Release
 ```
 
 Artifact responsibilities are documented in [Releasing and versioning](docs/releasing.md#what-builds-each-artifact).
-Upgrade the CAPO dependency from `v0.14.6` to `v0.14.7` before collecting release evidence.
-This version is the first validation fixture, not a permanent compatibility boundary.
+Record the CAPO version used for release validation. A dependency upgrade is separate work unless the tested version blocks Python replacement.
 
 #### US10.5 — Migration, Recovery, and Representative Validation
 
@@ -1136,25 +1135,29 @@ This checked list records the initial implementation pass, not replacement readi
 
 1. [x] Settle the Python `0.15.0` compatibility policy, ownership matrix, behavior matrix, and regression ledger
 2. [x] Use typed Gophercloud services to clean up floating IPs, load balancers, security groups, snapshots, and volumes. Remove the manual HTTP cleanup code
-3. [ ] Add pause handling and watches for Secrets and CAPI Clusters, and enable leader election in deployments (US8.1–US9.1)
-4. [ ] Implement the checkpoint for application credential and Secret deletion, including the failure tests in US7.3
-5. [ ] Pass envtest, Kind, real OpenStack ownership, migration, and recovery scenarios in US8.6 and US10.5
-6. [ ] Close release publication, Helm/Kustomize parity, immutable input, provenance, RC, and soak work in US10.1–US10.4
-7. [ ] Map every regression ledger row to a named Go test or tracked issue before the replacement release
+3. [x] Add pause handling and watches for Secrets and CAPI Clusters, and enable leader election in deployments (US8.1–US9.1)
+4. [x] Implement the checkpoint for application credential and Secret deletion, including unit tests and envtest for recovery in US7.3. The checkpoint change is under review in PR #49
+5. [ ] Pass the existing Azimuth cluster tests and the added [Janitor acceptance cases](docs/integration-testing.md) on the candidate commit, then confirm Python to Go migration in the representative environment
+6. [ ] Use the existing image and Helm publication workflow to release the validated commit
+
+The first release replaces Python's current functionality, including the agreed shared load balancer behavior.
+The additional cloud scenarios are implemented, but their live results are still pending.
+Broader Kind coverage, artifact parity, provenance, soak testing, and exhaustive regression ledger work remain follow-up work rather than prerequisites for this first release.
 
 ## Final Result
 
 The controller uses typed Gophercloud services for resource cleanup and patches finalizers without overwriting concurrent changes.
-Pause handling, Secret and Cluster watches, credential deletion, and release testing are still needed.
+Pause handling, Secret and Cluster watches, and credential deletion with checkpoints are implemented.
+Live replacement validation and the first release are still pending.
 
 | Layer | Current state |
 |---|---|
 | OpenStack client | Gophercloud authentication and typed Neutron, Octavia, Cinder, and Keystone adapters exist. Target validation remains incomplete |
 | Active cleanup path | `purge.go` calls the typed resource runner. The manual HTTP cleanup code has been removed |
-| Controller | Pending cleanup is requeued. Finalizer patches use the latest object and retry conflicts on the next reconcile |
+| Controller | Pending cleanup is requeued. Finalizer patches check current inputs. Pause handling, watches, and credential checkpoints are implemented |
 | Packaging | Nix, SBOM, Helm, Kustomize, and GoReleaser exist. Checks across artifacts remain |
-| Full workflow evidence | Unit tests check that the finalizer is kept if cleanup settings change or the object is replaced. Envtest, Kind, OpenStack, migration, and recovery tests are still needed |
-| Replacement readiness | Not ready. Open work is tracked in Actions and the [acceptance criteria](docs/design/go-rewrite-guidelines.md#acceptance-criteria-for-the-replacement-release) |
+| Full workflow evidence | Unit tests and envtest cover conflicts, lifecycle changes, and checkpoint recovery. The Azimuth suite now includes real OpenStack cleanup checks. A passing live run and migration result are still needed |
+| Replacement readiness | Pending live validation. The first release scope is tracked in Replacement Release Work above |
 
 ### Test Coverage (`internal/`)
 
@@ -1172,10 +1175,10 @@ Required evidence is tied to the User Stories and regression ledger.
 
 ```text
 Resource cleanup and finalizer patches (implemented)
-  → pause handling, watches, and leader election (Epic 8, US9.1)
-  → application credential and Secret deletion with checkpoints (US7.3)
-  → boundary, migration, and recovery evidence (US8.6, US10.5)
-  → release acceptance (Epic 10, Epic 11)
+  → pause handling, watches, and leader election (implemented)
+  → application credential and Secret deletion with checkpoints (PR #49)
+  → existing Azimuth tests with Janitor cleanup cases, then migration validation
+  → first release using the existing image and Helm workflow
 ```
 
 ## Deferred Work
@@ -1186,5 +1189,6 @@ Every extension follows [When the scope can grow](docs/design/go-rewrite-guideli
 
 ## Definition of Replacement Complete
 
-The Python controller can be deprecated only after replacement work items 2–7 and the [acceptance criteria](docs/design/go-rewrite-guidelines.md#acceptance-criteria-for-the-replacement-release) are complete.
+The first replacement release is ready when the work items above pass for the candidate commit and the representative environment confirms Python replacement.
+The broader acceptance scenarios remain a reference for later hardening.
 Deferred work requires separate review and release evidence.

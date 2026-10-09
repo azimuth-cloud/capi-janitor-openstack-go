@@ -14,6 +14,7 @@ import (
 	infrav1 "sigs.k8s.io/cluster-api-provider-openstack/api/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/cleanup"
 	"github.com/azimuth-cloud/capi-janitor-openstack-go/internal/controller"
@@ -133,6 +134,55 @@ func TestFinalizerConflictDoesNotReportCleanupSuccess(t *testing.T) {
 	case event := <-recorder.Events:
 		t.Fatalf("reported completion before finalizer removal: %q", event)
 	default:
+	}
+}
+
+func TestDisappearingClusterDoesNotReportCleanupOutcome(t *testing.T) {
+	for _, stage := range []string{"cleanup", "finalizer patch"} {
+		t.Run(stage, func(t *testing.T) {
+			cluster := newCluster("c", "default", withFinalizer, withDeletionTimestamp)
+			var removeCluster func(context.Context) error
+			r, c := newReconcilerWithInterceptors(
+				func(ctx context.Context, _ openstack.PurgeOptions) error {
+					if stage == "cleanup" {
+						return removeCluster(ctx)
+					}
+					return nil
+				},
+				interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if stage == "finalizer patch" {
+						if err := removeCluster(ctx); err != nil {
+							return err
+						}
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				}}, cluster, newSecret("cloud-credentials", "default"))
+			r.Metrics = controller.NewMetrics(prometheus.NewRegistry())
+			recorder := record.NewFakeRecorder(10)
+			r.Recorder = recorder
+			removeCluster = func(ctx context.Context) error {
+				var latest infrav1.OpenStackCluster
+				if err := c.Get(ctx, client.ObjectKeyFromObject(cluster), &latest); err != nil {
+					return err
+				}
+				controllerutil.RemoveFinalizer(&latest, controller.Finalizer)
+				return c.Update(ctx, &latest)
+			}
+			result, err := r.Reconcile(t.Context(), reconcileRequest(cluster.Name, cluster.Namespace))
+			if err != nil || !result.IsZero() {
+				t.Fatalf("reconcile after Cluster disappeared = %+v, %v", result, err)
+			}
+			for _, outcome := range []string{"success", "failure"} {
+				if got := testutil.ToFloat64(r.Metrics.CleanupsTotal.WithLabelValues(outcome)); got != 0 {
+					t.Errorf("reported %s for a disappeared Cluster: %v", outcome, got)
+				}
+			}
+			select {
+			case event := <-recorder.Events:
+				t.Fatalf("reported cleanup outcome for a disappeared Cluster: %q", event)
+			default:
+			}
+		})
 	}
 }
 

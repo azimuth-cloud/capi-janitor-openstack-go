@@ -10,8 +10,7 @@ for Kubernetes clusters created with the
 
 The operator watches `OpenStackCluster` resources in every namespace and removes dangling OpenStack resources when deletion starts.
 These resources include floating IPs, load balancers, security groups, Cinder volumes, and Cinder snapshots.
-Application credential and Secret deletion is not implemented yet.
-If requested, the controller returns an error and keeps the Secret and finalizer.
+When its Secret requests deletion, the operator also deletes the application credential and Secret after resource cleanup.
 
 > [!IMPORTANT]
 > This repository is still working toward the replacement release criteria.
@@ -35,7 +34,6 @@ The current source builds against these versions:
 ## How it works
 
 The operator uses Gophercloud to clean up OpenStack resources.
-Application credential and Secret deletion in step 4 is not implemented yet.
 
 1. When an `OpenStackCluster` is created, the operator adds its finalizer
    (`janitor.capi.stackhpc.com`) to the resource.
@@ -62,7 +60,7 @@ Application credential and Secret deletion in step 4 is not implemented yet.
 | Neutron           | Security groups matching the OCCM naming convention                                               |
 | Cinder            | Volumes provisioned by the Cinder CSI (configurable, see below)                                   |
 | Cinder            | Snapshots carrying the matching Cinder cluster metadata                                           |
-| Keystone          | Application credential deletion (not implemented yet)                                            |
+| Keystone          | The selected application credential, when its Secret requests deletion                           |
 
 A matching load balancer with one or more reserved OCCM tags remains eligible for deletion when every reserved tag belongs to the target cluster, including when several Services in that cluster share it.
 A foreign or malformed reserved tag preserves the load balancer and its VIP floating IP.
@@ -149,8 +147,20 @@ The Secret annotation `janitor.capi.stackhpc.com/credential-policy: delete` opts
 Deletion starts only after a fresh, complete inventory shows that the other owned resources are absent and the Janitor finalizer is the only finalizer.
 A missing annotation or any value other than the exact value `delete` keeps the application credential and Secret.
 The annotation declares ownership of the direct Secret and must not be set on a shared Secret.
-The controller currently returns an error at this step because the credential checkpoint is not implemented.
-It keeps the Secret and finalizer.
+Progress is stored in the `janitor.capi.stackhpc.com/credential-cleanup` annotation on the `OpenStackCluster`:
+
+1. After resource verification, save `credentialDeleteStarted`.
+2. Delete the recorded credential. A `204` or `404` for that credential allows the controller to save `secretDeleteStarted`.
+3. Delete the recorded Secret with UID and resource version preconditions. Remove the finalizer on a later reconciliation after the Secret is absent.
+
+The checkpoint contains identifiers and cleanup policies. Credentials stay in the Secret.
+After `secretDeleteStarted`, the controller resumes without authenticating to OpenStack.
+Changes to the recorded identity or cleanup policies stop cleanup.
+A missing Secret before that phase also blocks cleanup.
+
+If the credential DELETE succeeds but its response or the next checkpoint write is lost, the old checkpoint remains.
+Authentication failure on retry does not prove deletion, so the controller retains the Secret and finalizer for manual recovery.
+Confirm resource absence and the exact recorded credential's deletion before resolving that state.
 See the [application credential cleanup policy](docs/design/python-compatibility-policy.md#application-credential-cleanup) for the full deletion and recovery rules.
 
 Do not add credentials to the release bundle or commit them to the repository.
@@ -187,7 +197,8 @@ make test-envtest   # Controller integration tests only
 Envtest starts its own API server and etcd and installs the OpenStackCluster and Cluster CRDs from the CAPO and CAPI versions in `go.mod`.
 It does not use an existing cluster.
 These tests require the `envtest` build tag and run in a separate CI job.
-They cover finalizer conflicts, pause and resume, and Secret changes.
+They cover finalizer conflicts, pause and resume, Secret changes, checkpoint restarts, and Secret replacement.
+OpenStack calls in these tests use a test session. Tests against a real cloud are still required before release.
 
 Current test evidence and the gaps that aggregate coverage cannot close are tracked in the [roadmap](ROADMAP.md#final-result).
 

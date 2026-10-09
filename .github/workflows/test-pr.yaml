@@ -46,6 +46,7 @@ jobs:
               - 'nix/**'
               - 'config/**'
               - 'chart/**'
+              - 'test/integration/**'
               - '.github/workflows/build-push-artifacts.yaml'
               - '.github/workflows/test-pr.yaml'
 
@@ -67,6 +68,11 @@ jobs:
   run_azimuth_tests:
     needs: [publish_artifacts]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      JANITOR_TEST_SOURCE: ${{ github.workspace }}/janitor-source
+      JANITOR_TEST_EXTERNAL_NETWORK_ID: ${{ vars.JANITOR_TEST_EXTERNAL_NETWORK_ID }}
     steps:
       # Check out the configuration repository
       - name: Set up Azimuth environment
@@ -75,18 +81,24 @@ jobs:
           os-clouds: ${{ secrets.OS_CLOUDS }}
           environment-prefix: janitor-ci
           target-cloud: ${{ vars.TARGET_CLOUD }}
-          # Use the version of the chart that we just built
-          # We also don't need all the tests
-          # The Kubernetes test is sufficient to confirm the janitor is working
+          # Test the published chart with the existing Kubernetes suite and Janitor cleanup cases.
           extra-vars: |
             clusterapi_janitor_openstack_chart_repo: https://azimuth-cloud.github.io/capi-janitor-openstack-go
             clusterapi_janitor_openstack_chart_version: ${{ needs.publish_artifacts.outputs.chart-version }}
             generate_tests_caas_suite_enabled: false
             generate_tests_kubernetes_apps_suite_enabled: false
+            generate_tests_kubernetes_suite_template: '{{ lookup("env", "JANITOR_TEST_SOURCE") }}/test/integration/janitor_suite.robot'
         # GitHub terminates jobs after 6 hours
         # We don't want jobs to acquire the lock then get timed out before they can finish
         # So wait a maximum of 3 hours to acquire the lock, leaving 3 hours for other tasks in the job
         timeout-minutes: 180
+
+      - name: Check out Janitor acceptance tests
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: janitor-source
+          persist-credentials: false
 
       # Provision Azimuth using the azimuth-ops version under test
       - name: Provision Azimuth

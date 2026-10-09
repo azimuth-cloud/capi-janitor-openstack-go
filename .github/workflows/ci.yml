@@ -11,6 +11,23 @@ concurrency:
 permissions: {}
 
 jobs:
+  integration-helpers:
+    name: Azimuth test helpers (offline)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test acceptance checks without a cloud
+        run: |
+          python3 -m venv "$RUNNER_TEMP/janitor-tests"
+          source "$RUNNER_TEMP/janitor-tests/bin/activate"
+          pip install -r test/integration/requirements.txt
+          python -m unittest discover -s test/integration -v
+
   nix:
     name: fmt + vet + test (Nix)
     runs-on: ubuntu-latest

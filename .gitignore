@@ -15,3 +15,7 @@ sbom.cdx.json
 
 # Release staging
 /.release/
+
+# Python integration test helpers
+__pycache__/
+.venv/

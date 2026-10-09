@@ -5,6 +5,13 @@ Please check for relevant issues and PRs before opening a new one of your own.
 
 ## Making a contribution
 
+When raising a PR from a forked repo the integration CI tests will fail due to
+missing secrets needed to push artifacts and access the cloud.
+Contributors should raise a PR against a feature branch in the organisation's
+repository. A maintainer will review and, once approved, merge the fork branch
+into an internal branch. From there a second PR will be raised to merge to the
+default branch and that will run the full integration test suite.
+
 ### Helm template snapshots
 
 The CI in this repository uses the Helm

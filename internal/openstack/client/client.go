@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gophercloud/gophercloud/v2"
@@ -50,58 +51,30 @@ type Options struct {
 // Gophercloud clients. Cleanup and controller code use the small interfaces in
 // internal/cleanup.
 type Client struct {
-	provider                *gophercloud.ProviderClient
-	endpointOpts            gophercloud.EndpointOpts
-	userID                  string
-	projectID               string
-	applicationCredentialID string
-	authenticated           bool
+	provider         *gophercloud.ProviderClient
+	userID           string
+	projectID        string
+	authenticated    bool
+	credentialConfig CredentialConfig
+	sensitiveValues  []string
 }
 
 // NewClient parses an in-memory clouds.yaml entry and authenticates with
 // Gophercloud using an explicit v3 application credential.
 func NewClient(ctx context.Context, options Options) (*Client, error) {
-	cloudLoader, err := newYAMLLoader(options.CloudsYAML)
+	cloud, config, err := loadCredential(options)
 	if err != nil {
 		return nil, err
 	}
-
-	cloudName := options.CloudName
-	if cloudName == "" {
-		cloudName = defaultCloudName
-	}
-
-	clientOptions := &clientconfig.ClientOpts{
-		Cloud:     cloudName,
-		EnvPrefix: "CAPI_JANITOR_OPENSTACK_",
-		YAMLOpts:  cloudLoader,
-	}
-	cloud, err := clientconfig.GetCloudFromYAML(clientOptions)
-	if err != nil {
-		return nil, err
-	}
-	if cloud.AuthInfo == nil {
-		return nil, fmt.Errorf("cloud %q has no auth configuration", cloudName)
-	}
-
-	if err := requireApplicationCredential(cloud); err != nil {
-		return nil, err
-	}
-	cloud.AuthInfo.AllowReauth = true
-	cloudLoader.clouds[cloudName] = *cloud
 
 	httpClient, err := newHTTPClient(cloud, options.CACert)
 	if err != nil {
 		return nil, err
 	}
 
-	configuredAuth, err := clientconfig.AuthOptions(clientOptions)
-	if err != nil {
-		return nil, err
-	}
 	credentialAuth := gophercloud.AuthOptions{
-		IdentityEndpoint:            configuredAuth.IdentityEndpoint,
-		ApplicationCredentialID:     cloud.AuthInfo.ApplicationCredentialID,
+		IdentityEndpoint:            config.Authority,
+		ApplicationCredentialID:     config.CredentialID,
 		ApplicationCredentialSecret: cloud.AuthInfo.ApplicationCredentialSecret,
 		AllowReauth:                 true,
 	}
@@ -114,20 +87,21 @@ func NewClient(ctx context.Context, options Options) (*Client, error) {
 	providerClient.UserAgent.Prepend(userAgent)
 
 	client := &Client{
-		provider: providerClient,
-		endpointOpts: gophercloud.EndpointOpts{
-			Region:       cloud.RegionName,
-			Availability: clientconfig.GetEndpointType(cloud.EndpointType),
+		provider:         providerClient,
+		credentialConfig: config,
+		sensitiveValues: []string{
+			cloud.AuthInfo.ApplicationCredentialSecret,
+			cloud.AuthInfo.Password,
+			cloud.AuthInfo.Token,
 		},
-		applicationCredentialID: cloud.AuthInfo.ApplicationCredentialID,
 	}
 
 	if err := openstack.Authenticate(ctx, providerClient, credentialAuth); err != nil {
-		return nil, err
+		return nil, client.RedactError(err)
 	}
 
 	if err := client.loadTokenAndCatalog(ctx); err != nil {
-		return nil, err
+		return nil, client.RedactError(err)
 	}
 	if client.userID == "" {
 		return nil, errors.New("authenticated user ID is empty")
@@ -216,7 +190,7 @@ func (c *Client) ApplicationCredentialID() string {
 	if c == nil {
 		return ""
 	}
-	return c.applicationCredentialID
+	return c.credentialConfig.CredentialID
 }
 
 // ProviderClient returns the authenticated provider used to create typed
@@ -234,7 +208,10 @@ func (c *Client) EndpointOpts() gophercloud.EndpointOpts {
 	if c == nil {
 		return gophercloud.EndpointOpts{}
 	}
-	return c.endpointOpts
+	return gophercloud.EndpointOpts{
+		Region:       c.credentialConfig.Region,
+		Availability: gophercloud.Availability(c.credentialConfig.Interface),
+	}
 }
 
 type yamlLoader struct {
@@ -244,7 +221,7 @@ type yamlLoader struct {
 func newYAMLLoader(data string) (*yamlLoader, error) {
 	var parsed clientconfig.Clouds
 	if err := yaml.Unmarshal([]byte(data), &parsed); err != nil {
-		return nil, fmt.Errorf("parsing clouds.yaml: %w", err)
+		return nil, errors.New("parsing clouds.yaml: invalid configuration")
 	}
 	return &yamlLoader{clouds: parsed.Clouds}, nil
 }
@@ -259,23 +236,6 @@ func (*yamlLoader) LoadSecureCloudsYAML() (map[string]clientconfig.Cloud, error)
 
 func (*yamlLoader) LoadPublicCloudsYAML() (map[string]clientconfig.Cloud, error) {
 	return nil, nil
-}
-
-func requireApplicationCredential(cloud *clientconfig.Cloud) error {
-	if cloud.AuthInfo == nil {
-		return &UnsupportedAuthTypeError{AuthType: string(cloud.AuthType)}
-	}
-
-	if cloud.AuthType != clientconfig.AuthV3ApplicationCredential {
-		return &UnsupportedAuthTypeError{AuthType: string(cloud.AuthType)}
-	}
-	if cloud.AuthInfo.ApplicationCredentialID == "" {
-		return errors.New("application credential ID is empty")
-	}
-	if cloud.AuthInfo.ApplicationCredentialSecret == "" {
-		return errors.New("application credential secret is empty")
-	}
-	return nil
 }
 
 func newHTTPClient(cloud *clientconfig.Cloud, caCert string) (*http.Client, error) {
@@ -298,3 +258,33 @@ func newHTTPClient(cloud *clientconfig.Cloud, caCert string) (*http.Client, erro
 	transport.TLSClientConfig = tlsConfig
 	return &http.Client{Transport: transport, Timeout: httpRequestTimeout}, nil
 }
+
+// CredentialConfig returns the selected cloud settings without secret values.
+func (c *Client) CredentialConfig() CredentialConfig {
+	return c.credentialConfig
+}
+
+// RedactError hides secrets and tokens in the message while preserving errors.Is and errors.As.
+func (c *Client) RedactError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	for _, value := range c.sensitiveValues {
+		if value != "" {
+			message = strings.ReplaceAll(message, value, "[redacted]")
+		}
+	}
+	if token := c.provider.Token(); token != "" {
+		message = strings.ReplaceAll(message, token, "[redacted]")
+	}
+	return &redactedError{message: message, cause: err}
+}
+
+type redactedError struct {
+	message string
+	cause   error
+}
+
+func (e *redactedError) Error() string { return e.message }
+func (e *redactedError) Unwrap() error { return e.cause }

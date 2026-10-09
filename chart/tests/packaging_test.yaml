@@ -3,6 +3,55 @@
 suite: Packaging and deployment tests
 
 tests:
+  - it: should enable leader election
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --leader-elect
+
+  - it: should grant namespaced leases for leader election
+    template: templates/leader-election.yaml
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: Role
+      - contains:
+          path: rules
+          content:
+            apiGroups: [coordination.k8s.io]
+            resources: [leases]
+            verbs: [get, list, watch, create, update, patch]
+
+  - it: should bind leader election permissions to the controller
+    template: templates/leader-election.yaml
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: roleRef.kind
+          value: Role
+      - equal:
+          path: subjects[0].namespace
+          value: NAMESPACE
+
+  - it: should watch identity Secrets and owning Clusters
+    template: templates/clusterrole.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: [secrets]
+            verbs: [get, list, watch, delete]
+      - contains:
+          path: rules
+          content:
+            apiGroups: [cluster.x-k8s.io]
+            resources: [clusters]
+            verbs: [get, list, watch]
+
   # US10.1 — Image sécurisée
   - it: should run pods as non-root (US10.1)
     template: templates/deployment.yaml

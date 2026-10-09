@@ -30,6 +30,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	infrav1 "sigs.k8s.io/cluster-api-provider-openstack/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -50,6 +51,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(infrav1.AddToScheme(scheme))
+	utilruntime.Must(clusterv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -208,8 +210,7 @@ func main() {
 }
 
 func managerClientOptions() client.Options {
-	// Read referenced Secrets directly, the service account has get/delete
-	// permissions, not the list/watch permissions needed to populate a cache.
+	// Cache Secret metadata for watches and read credential data directly from the API server.
 	return client.Options{
 		Cache: &client.CacheOptions{
 			DisableFor: []client.Object{&corev1.Secret{}},

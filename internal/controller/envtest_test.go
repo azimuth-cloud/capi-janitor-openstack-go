@@ -20,9 +20,11 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
 	infrav1 "sigs.k8s.io/cluster-api-provider-openstack/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	controllerconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -32,6 +34,9 @@ import (
 )
 
 func TestEnvtestFinalizers(t *testing.T) {
+	if err := clusterv1.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
 	// Resolve the unmodified CRD from the same CAPO module as the Go types.
 	// go test without the envtest build tag remains usable in offline/Nix builds.
 	moduleDir, err := exec.CommandContext(t.Context(), "go", "list", "-m", "-f", "{{.Dir}}",
@@ -39,13 +44,20 @@ func TestEnvtestFinalizers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("locating CAPO CRD: %v", err)
 	}
+	capiModuleDir, err := exec.CommandContext(t.Context(), "go", "list", "-m", "-f", "{{.Dir}}",
+		"sigs.k8s.io/cluster-api").Output()
+	if err != nil {
+		t.Fatalf("locating CAPI CRD: %v", err)
+	}
 	useExistingCluster := false
 	testEnv := &envtest.Environment{
 		// Always start an isolated control plane, even if the caller has set
 		// USE_EXISTING_CLUSTER or has a production kubeconfig configured.
 		UseExistingCluster: &useExistingCluster,
-		CRDDirectoryPaths: []string{filepath.Join(strings.TrimSpace(string(moduleDir)), "config", "crd", "bases",
-			"infrastructure.cluster.x-k8s.io_openstackclusters.yaml")},
+		CRDDirectoryPaths: []string{
+			filepath.Join(strings.TrimSpace(string(moduleDir)), "config", "crd", "bases", "infrastructure.cluster.x-k8s.io_openstackclusters.yaml"),
+			filepath.Join(strings.TrimSpace(string(capiModuleDir)), "config", "crd", "bases", "cluster.x-k8s.io_clusters.yaml"),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
 	config, err := testEnv.Start()
@@ -73,6 +85,9 @@ func TestEnvtestFinalizers(t *testing.T) {
 	}
 	t.Run("manager observes creation", func(t *testing.T) {
 		testEnvtestManager(t, config, apiClient)
+	})
+	t.Run("manager observes pause and Secret recovery", func(t *testing.T) {
+		testEnvtestLifecycle(t, config, apiClient)
 	})
 }
 
@@ -191,25 +206,47 @@ func testEnvtestFinalizerConflict(t *testing.T, apiClient client.Client, removin
 func testEnvtestManager(t *testing.T, config *rest.Config, apiClient client.Client) {
 	t.Helper()
 	namespace := envtestNamespace(t, apiClient)
+	_, ctx := startEnvtestManager(t, config, namespace, func(context.Context, openstack.PurgeOptions) error {
+		return fmt.Errorf("cleanup must not run for an active cluster")
+	})
+	cluster := newCluster("watched", namespace)
+	if err := apiClient.Create(ctx, cluster); err != nil {
+		t.Fatalf("creating watched OpenStackCluster: %v", err)
+	}
+	if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+		var got infrav1.OpenStackCluster
+		if err := apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), &got); err != nil {
+			return false, err
+		}
+		return controllerutil.ContainsFinalizer(&got, controller.Finalizer), nil
+	}); err != nil {
+		t.Fatalf("waiting for manager to add finalizer from creation event: %v", err)
+	}
+}
+
+func startEnvtestManager(t *testing.T, config *rest.Config, namespace string, cleanupFunc func(context.Context, openstack.PurgeOptions) error) (ctrl.Manager, context.Context) {
+	t.Helper()
+	// Sequential subtests reuse the controller's process-wide name.
+	skipNameValidation := true
 	mgr, err := ctrl.NewManager(config, ctrl.Options{
 		Scheme: testScheme,
+		Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}},
 		Cache: cache.Options{DefaultNamespaces: map[string]cache.Config{
 			namespace: {},
 		}},
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
+		Controller:             controllerconfig.Controller{SkipNameValidation: &skipNameValidation},
 	})
 	if err != nil {
 		t.Fatalf("creating manager: %v", err)
 	}
 	r := &controller.OpenStackClusterReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   testScheme,
-		Metrics:  controller.NewMetrics(prometheus.NewRegistry()),
-		Recorder: record.NewFakeRecorder(10),
-		CleanupFunc: func(context.Context, openstack.PurgeOptions) error {
-			return fmt.Errorf("cleanup must not run for an active cluster")
-		},
+		Client:      mgr.GetClient(),
+		Scheme:      testScheme,
+		Metrics:     controller.NewMetrics(prometheus.NewRegistry()),
+		Recorder:    record.NewFakeRecorder(20),
+		CleanupFunc: cleanupFunc,
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		t.Fatalf("registering controller: %v", err)
@@ -233,19 +270,7 @@ func testEnvtestManager(t *testing.T, config *rest.Config, apiClient client.Clie
 	if !mgr.GetCache().WaitForCacheSync(syncCtx) {
 		t.Fatal("manager cache did not sync")
 	}
-	cluster := newCluster("watched", namespace)
-	if err := apiClient.Create(ctx, cluster); err != nil {
-		t.Fatalf("creating watched OpenStackCluster: %v", err)
-	}
-	if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
-		var got infrav1.OpenStackCluster
-		if err := apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), &got); err != nil {
-			return false, err
-		}
-		return controllerutil.ContainsFinalizer(&got, controller.Finalizer), nil
-	}); err != nil {
-		t.Fatalf("waiting for manager to add finalizer from creation event: %v", err)
-	}
+	return mgr, ctx
 }
 
 func envtestNamespace(t *testing.T, apiClient client.Client) string {

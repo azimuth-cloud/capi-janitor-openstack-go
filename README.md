@@ -117,6 +117,15 @@ The configured value must be a positive integer number of seconds.
 helm upgrade ... --set retryDefaultDelay=120
 ```
 
+### Pause and resume
+
+The controller skips finalizer changes and cleanup while the `cluster.x-k8s.io/paused` annotation is present on the `OpenStackCluster` or its owning CAPI `Cluster`.
+The owning Cluster's `spec.paused` field has the same effect.
+Removing the pause triggers reconciliation through the Cluster or OpenStackCluster watch.
+Changes to the referenced Secret also trigger reconciliation.
+The Secret watch caches metadata only, and credential data is read directly from the API server.
+Helm and Kustomize deployments enable leader election so one replica handles reconciliation.
+
 ### Environment variables
 
 | Variable                              | Default  | Description                                |
@@ -175,9 +184,10 @@ make test           # Generated files, formatting, vet, unit tests, and envtest
 make test-envtest   # Controller integration tests only
 ```
 
-Envtest starts its own API server and etcd and installs the OpenStackCluster CRD from the CAPO version in `go.mod`.
+Envtest starts its own API server and etcd and installs the OpenStackCluster and Cluster CRDs from the CAPO and CAPI versions in `go.mod`.
 It does not use an existing cluster.
 These tests require the `envtest` build tag and run in a separate CI job.
+They cover finalizer conflicts, pause and resume, and Secret changes.
 
 Current test evidence and the gaps that aggregate coverage cannot close are tracked in the [roadmap](ROADMAP.md#final-result).
 

@@ -218,3 +218,116 @@ func TestClusterWatchOnlyRequeuesPauseAndIdentityChanges(t *testing.T) {
 		}
 	})
 }
+
+type lifecycleCleanupSession struct {
+	onCleanup func()
+	deletes   int
+}
+
+func (s *lifecycleCleanupSession) Cleanup(context.Context) error {
+	if s.onCleanup != nil {
+		s.onCleanup()
+	}
+	return nil
+}
+
+func (s *lifecycleCleanupSession) Binding() openstack.CredentialBinding {
+	return openstack.CredentialBinding{
+		Authority: "https://keystone.example/v3", ProjectID: "project-1", UserID: "user-1",
+		Interface: "public", CloudName: "openstack", CredentialID: "credential-1",
+	}
+}
+
+func (s *lifecycleCleanupSession) DeleteApplicationCredential(context.Context, string) error {
+	s.deletes++
+	return nil
+}
+
+func TestPauseDuringReconcileBlocksCredentialTransitions(t *testing.T) {
+	for _, phase := range []string{"initial cleanup", "credential session"} {
+		for _, target := range []string{"OpenStackCluster", "Cluster"} {
+			t.Run(phase+"/"+target, func(t *testing.T) {
+				ctx := t.Context()
+				now := metav1.Now()
+				infra := &infrav1.OpenStackCluster{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "test", Name: "infra", UID: "infra-uid", DeletionTimestamp: &now,
+						Finalizers: []string{Finalizer}, OwnerReferences: []metav1.OwnerReference{lifecycleOwnerRef("owner-uid")},
+					},
+					Spec: infrav1.OpenStackClusterSpec{IdentityRef: infrav1.OpenStackIdentityReference{Name: "credentials", CloudName: "openstack"}},
+				}
+				owner := &clusterv1.Cluster{ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "owner", UID: "owner-uid"}}
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "credentials", UID: "secret-uid",
+						Annotations: map[string]string{CredentialPolicyAnnotation: PolicyDelete}},
+					Data: map[string][]byte{"clouds.yaml": []byte(`clouds:
+  openstack:
+    auth_type: v3applicationcredential
+    auth:
+      auth_url: https://keystone.example/v3
+      application_credential_id: credential-1
+      application_credential_secret: test-only-secret
+      project_id: project-1
+      user_id: user-1
+`)},
+				}
+				c := fake.NewClientBuilder().WithScheme(lifecycleScheme(t)).WithObjects(infra, owner, secret).Build()
+				session := &lifecycleCleanupSession{}
+				pause := func() {
+					var obj client.Object = &infrav1.OpenStackCluster{}
+					key := client.ObjectKeyFromObject(infra)
+					if target == "Cluster" {
+						obj, key = &clusterv1.Cluster{}, client.ObjectKeyFromObject(owner)
+					}
+					if err := c.Get(ctx, key, obj); err != nil {
+						t.Fatal(err)
+					}
+					annotations := obj.GetAnnotations()
+					if annotations == nil {
+						annotations = make(map[string]string)
+					}
+					annotations[clusterv1.PausedAnnotation] = ""
+					obj.SetAnnotations(annotations)
+					if err := c.Update(ctx, obj); err != nil {
+						t.Fatal(err)
+					}
+				}
+				r := &OpenStackClusterReconciler{Client: c, APIReader: c,
+					NewSession: func(context.Context, openstack.PurgeOptions) (openstack.CleanupSession, error) { return session, nil },
+				}
+				request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(infra)}
+				if phase == "credential session" {
+					if _, err := r.Reconcile(ctx, request); err != nil {
+						t.Fatalf("saving initial checkpoint: %v", err)
+					}
+					r.NewSession = func(context.Context, openstack.PurgeOptions) (openstack.CleanupSession, error) {
+						pause()
+						return session, nil
+					}
+				} else {
+					session.onCleanup = pause
+				}
+				if err := c.Get(ctx, request.NamespacedName, infra); err != nil {
+					t.Fatal(err)
+				}
+				checkpoint := infra.Annotations[CredentialCheckpointAnnotation]
+				result, err := r.Reconcile(ctx, request)
+				if err != nil || !result.IsZero() {
+					t.Fatalf("mid-reconcile pause = %+v, %v, want no retry or error", result, err)
+				}
+				if err := c.Get(ctx, request.NamespacedName, infra); err != nil {
+					t.Fatal(err)
+				}
+				if infra.Annotations[CredentialCheckpointAnnotation] != checkpoint || len(infra.Finalizers) != 1 || infra.Finalizers[0] != Finalizer {
+					t.Fatal("checkpoint or finalizer advanced after pause")
+				}
+				if session.deletes != 0 {
+					t.Fatal("credential DELETE ran after pause")
+				}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(secret), &corev1.Secret{}); err != nil {
+					t.Fatalf("Secret removed after pause: %v", err)
+				}
+			})
+		}
+	}
+}

@@ -89,6 +89,9 @@ func TestEnvtestFinalizers(t *testing.T) {
 	t.Run("manager observes pause and Secret recovery", func(t *testing.T) {
 		testEnvtestLifecycle(t, config, apiClient)
 	})
+	t.Run("credential cleanup survives restarts", func(t *testing.T) {
+		testEnvtestCredentialCleanup(t, apiClient)
+	})
 }
 
 // envtestConflictingClient lets a second controller write after the janitor's

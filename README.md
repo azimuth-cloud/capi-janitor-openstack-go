@@ -29,7 +29,7 @@ The current source builds against these versions:
 | Kubernetes Go modules | 0.36.2          |
 | CAPO API module       | 0.14.6          |
 | controller-runtime    | 0.24.1          |
-| Helm                  | 3.x             |
+| Helm                  | 3.8+            |
 
 ## How it works
 
@@ -170,15 +170,15 @@ See the [application credential cleanup policy](docs/design/python-compatibility
 
 Do not add credentials to the release bundle or commit them to the repository.
 
-```sh
-helm repo add \
-  cluster-api-janitor-openstack \
-  https://azimuth-cloud.github.io/capi-janitor-openstack-go
+Install a published chart version from Quay with Helm 3.8 or later.
+Replace `<version>` with the chart version, without the release tag's leading `v`.
 
+```sh
 helm upgrade \
   cluster-api-janitor-openstack \
-  cluster-api-janitor-openstack/cluster-api-janitor-openstack \
-  --install
+  oci://quay.io/azimuth/cluster-api-janitor-openstack-charts/cluster-api-janitor-openstack \
+  --install \
+  --version <version>
 ```
 
 ## Development

@@ -38,7 +38,10 @@ PRs can target `main` or another development branch, including a branch under re
 Related source, packaging, workflow, or integration test changes trigger the cloud run.
 Artifact publication and cloud tests run only for PRs from the same repository, including Dependabot PRs.
 Fork PRs still run the ordinary CI checks, including the offline Python tests.
-Dependabot PRs use the `OS_CLOUDS` Dependabot secret.
+Dependabot PRs use the `OS_CLOUDS`, `QUAY_IO_USER` and `QUAY_IO_TOKEN` Dependabot secrets.
+
+The Azimuth deployment pulls the chart anonymously from Quay and the controller image from GHCR.
+Complete the [publication setup](releasing.md#publication-setup) before the first cloud run.
 
 Changing a PR's base alone does not trigger this workflow. Push a new commit or reopen the PR to start a fresh run against the new base.
 

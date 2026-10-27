@@ -1,0 +1,4 @@
+# Versions used for offline checks. Azimuth supplies these libraries in live CI.
+openstacksdk==4.13.0
+PyYAML==6.0.3
+robotframework==7.4.2

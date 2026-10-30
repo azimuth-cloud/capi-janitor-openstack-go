@@ -1,0 +1,4 @@
+repositoryID: 6457cdf1-de5d-45a1-a16d-594969f78ae3
+ignore:
+  - name: cluster-api-janitor-openstack
+    version: '-dev\.'

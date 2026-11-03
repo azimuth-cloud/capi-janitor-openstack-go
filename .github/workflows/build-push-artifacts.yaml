@@ -162,15 +162,13 @@ jobs:
     outputs:
       chart-version: ${{ steps.artifact-versions.outputs.chart }}
     permissions:
-      contents: write
-      id-token: none
-      packages: none
-      security-events: none
+      contents: read
+      id-token: write # Required for chart signing
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref }}
           # This is important for the semver action to work correctly
           # when determining the number of commits since the last tag
           fetch-depth: 0
@@ -192,16 +190,30 @@ jobs:
             echo "chart=${TAG#v}" >> "$GITHUB_OUTPUT"
             echo "image=$TAG" >> "$GITHUB_OUTPUT"
           else
-            echo "chart=$SEMVER_VERSION" >> "$GITHUB_OUTPUT"
+            # Keep non-tag builds separate from releases, even on a tagged commit.
+            echo "chart=${SEMVER_VERSION%%[-+]*}-dev.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
             echo "image=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish Helm charts
-        uses: azimuth-cloud/github-actions/helm-publish@master
+      - name: Publish Helm chart to Quay
+        uses: azimuth-cloud/github-actions/helm-publish-oci@master
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          directory: chart
+          registry: quay.io
+          repository: azimuth/cluster-api-janitor-openstack-charts
+          username: ${{ secrets.QUAY_IO_USER }}
+          token: ${{ secrets.QUAY_IO_TOKEN }}
           version: ${{ steps.artifact-versions.outputs.chart }}
           app-version: ${{ steps.artifact-versions.outputs.image }}
+
+      - name: Publish Artifact Hub metadata
+        uses: azimuth-cloud/github-actions/artifacthub-metadata@master
+        with:
+          directory: chart
+          registry: quay.io
+          repository: azimuth/cluster-api-janitor-openstack-charts
+          username: ${{ secrets.QUAY_IO_USER }}
+          token: ${{ secrets.QUAY_IO_TOKEN }}
 
   publish_github_release:
     name: Publish GitHub release

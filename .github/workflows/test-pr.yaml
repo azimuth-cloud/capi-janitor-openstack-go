@@ -59,9 +59,11 @@ jobs:
     uses: ./.github/workflows/build-push-artifacts.yaml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit
     permissions:
       contents: write
-      packages: write         # required for pushing container images
+      id-token: write # Required for chart signing
+      packages: write
 
   run_azimuth_tests:
     needs: [publish_artifacts]
@@ -81,7 +83,8 @@ jobs:
           target-cloud: ${{ vars.TARGET_CLOUD }}
           # Test the published chart with the existing Kubernetes suite and Janitor cleanup cases.
           extra-vars: |
-            clusterapi_janitor_openstack_chart_repo: https://azimuth-cloud.github.io/capi-janitor-openstack-go
+            clusterapi_janitor_openstack_chart_repo: ""
+            clusterapi_janitor_openstack_chart_name: oci://quay.io/azimuth/cluster-api-janitor-openstack-charts/cluster-api-janitor-openstack
             clusterapi_janitor_openstack_chart_version: ${{ needs.publish_artifacts.outputs.chart-version }}
             generate_tests_caas_suite_enabled: false
             generate_tests_kubernetes_apps_suite_enabled: false

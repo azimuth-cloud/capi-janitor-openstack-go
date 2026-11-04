@@ -66,7 +66,7 @@ release:
   prerelease: auto
   mode: replace
   header: |
-    {{- if eq .Major "0" }}
+    {{- if eq .Major 0 }}
     > [!WARNING]
     > The Go rewrite is still stabilizing throughout the v0.x.y series and is not yet considered stable for production.
     > Test migration before deployment.

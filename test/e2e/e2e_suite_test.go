@@ -35,7 +35,6 @@ import (
 
 var (
 	// managerImage is the manager image to be built and loaded for testing.
-	// Must match the name/tag hardcoded in nix/default.nix's `image` derivation.
 	managerImage = "ghcr.io/azimuth-cloud/capi-janitor-openstack-go:latest"
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
@@ -54,17 +53,20 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager image (Nix)")
-	imageArchive := filepath.Join(os.TempDir(), "cluster-api-janitor-openstack-e2e-image.tar.gz")
-	// Kind nodes are single-arch, so build the image matching the host running
-	// the suite: the default `image` derivation is amd64, `image-arm64` is arm64.
-	nixImage := "image"
-	if runtime.GOARCH == "arm64" {
-		nixImage = "image-arm64"
-	}
-	cmd := exec.Command("nix-build", "nix", "-A", nixImage, "-o", imageArchive)
+	By("building the manager image")
+	// Kind nodes are single-arch, so build a Linux image matching the host.
+	cmd := exec.Command("make", "docker-build", "IMG="+managerImage, "PLATFORM=linux/"+runtime.GOARCH)
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
+
+	By("saving the manager image for Kind")
+	imageDir, err := os.MkdirTemp("", "cluster-api-janitor-openstack-e2e-")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to create the image archive directory")
+	DeferCleanup(os.RemoveAll, imageDir)
+	imageArchive := filepath.Join(imageDir, "manager.tar")
+	cmd = exec.Command("make", "docker-save", "IMG="+managerImage, "IMAGE_ARCHIVE="+imageArchive)
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to save the manager image")
 
 	// TODO(user): If you want to change the e2e test vendor from Kind,
 	// ensure the image is built and available, then remove the following block.

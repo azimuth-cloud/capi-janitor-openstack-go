@@ -13,12 +13,42 @@ updates:
     labels:
       - automation
       - gha-update
-    # Only allow updates for actions maintained by GitHub
+    # Only update approved action names, including the GoReleaser exception.
+    # This list does not approve individual action versions or commit SHAs.
     allow:
       - dependency-name: "actions/*"
       - dependency-name: "github-actions/*"
       - dependency-name: "goreleaser/goreleaser-action"
 
-  # NOTE: gomod updates are deliberately not enabled. The Nix build pins
-  # `vendorHash` in nix/default.nix, which must be recomputed by hand for every
-  # dependency change, so Dependabot Go PRs always fail CI.
+  # Follow CAPI/CAPO: group routine Go updates, but review related Kubernetes,
+  # controller-runtime, CAPI and CAPO version changes together.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      go-patch-and-minor:
+        patterns: ["*"]
+        update-types: ["patch", "minor"]
+    ignore:
+      - dependency-name: "k8s.io/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "sigs.k8s.io/controller-runtime"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "sigs.k8s.io/cluster-api*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    labels:
+      - automation
+      - go-update
+    commit-message:
+      prefix: go
+
+  # The Go builder version comes from go.mod through Makefile. Only image
+  # references with their own version (such as the runtime image) are updated here.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - automation
+      - image-update

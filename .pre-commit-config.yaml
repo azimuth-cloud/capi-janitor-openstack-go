@@ -16,14 +16,14 @@ repos:
     hooks:
       - id: go-fmt
         name: go fmt
-        description: Fail if any Go file is not gofmt-formatted (mirrors nix -A tests).
+        description: Fail if any Go file is not gofmt-formatted (mirrors make fmt-check).
         entry: bash -c 'out=$(gofmt -l "$@"); if [ -n "$out" ]; then echo "$out"; exit 1; fi' --
         language: system
         types: [go]
 
       - id: go-vet
         name: go vet
-        description: Run go vet ./... (mirrors nix -A tests / make vet).
+        description: Run go vet ./... (mirrors make vet).
         entry: bash -c 'go vet ./...'
         language: system
         types: [go]
@@ -31,8 +31,8 @@ repos:
 
       - id: go-test
         name: go test
-        description: Run the unit test suite, excluding e2e (mirrors nix -A tests / make test).
-        entry: bash -c 'go test $(go list ./... | grep -v /test/e2e)'
+        description: Run the unit test suite, excluding e2e and envtest (mirrors make test-unit).
+        entry: make test-unit
         language: system
         types: [go]
         pass_filenames: false

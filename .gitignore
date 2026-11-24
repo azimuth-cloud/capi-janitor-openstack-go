@@ -7,10 +7,11 @@
 chart/charts/*
 chart/Chart.lock
 
-# Nix
+# Image archives and SBOMs
 result
 result-*
-sbom.cdx.json
+sbom*.cdx.json
+*.tar
 *.tar.gz
 
 # Release staging

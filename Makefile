@@ -1,6 +1,15 @@
-# Image URL used to set the manager image in generated/deployed manifests
-# (the image itself is built via Nix, see nix/default.nix).
+# Image URL used for container builds and generated/deployed manifests.
 IMG ?= controller:latest
+CONTAINER_TOOL ?= docker
+# Keep the image builder and setup-go/GoReleaser on the version declared in go.mod.
+GO_VERSION := $(shell awk '$$1 == "go" { print $$2; exit }' go.mod)
+ARCH ?= $(shell go env GOARCH)
+PLATFORM ?= linux/$(ARCH)
+PLATFORMS ?= linux/amd64,linux/arm64
+BUILDPLATFORM ?= linux/$(shell go env GOARCH)
+IMAGE_ARCHIVE ?= image.tar
+SBOM ?= sbom.cdx.json
+SYFT_IMAGE ?= docker.io/anchore/syft:v1.57.2
 # BUNDLE is the output path for the consolidated Kubernetes installation YAML.
 BUNDLE ?= dist/install.yaml
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
@@ -52,9 +61,22 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 fmt: ## Run go fmt against code.
 	go fmt ./...
 
+.PHONY: fmt-check
+fmt-check: ## Check Go formatting without modifying files.
+	@bad="$$(gofmt -l $$(find . -name '*.go' -not -path './vendor/*' -not -path './.git/*' -not -path './bin/*'))"; \
+	if [ -n "$$bad" ]; then printf '%s\n' "$$bad"; exit 1; fi
+
+.PHONY: check-build-config
+check-build-config: ## Test that Go version updates reach the container build commands.
+	python3 hack/test_build_config.py
+
 .PHONY: vet
 vet: ## Run go vet against code.
 	go vet ./...
+
+.PHONY: test-unit
+test-unit: ## Run unit tests without requiring a cluster or envtest binaries.
+	go test $$(go list ./... | grep -v /test/e2e) -coverprofile cover.out
 
 .PHONY: test
 test: manifests generate fmt vet ## Run unit tests and isolated API integration tests.
@@ -102,6 +124,42 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
+
+.PHONY: go-version
+go-version: ## Print the Go version used for container builds.
+	@test -n "$(GO_VERSION)" || { echo 'go.mod must declare a Go version' >&2; exit 1; }
+	@printf '%s\n' '$(GO_VERSION)'
+
+.PHONY: docker-build
+docker-build: ## Build a native or cross-compiled Linux controller image.
+	@test -n "$(GO_VERSION)" || { echo 'go.mod must declare a Go version' >&2; exit 1; }
+	$(CONTAINER_TOOL) build --platform "$(PLATFORM)" \
+		--build-arg GO_VERSION="$(GO_VERSION)" \
+		--build-arg BUILDPLATFORM="$(BUILDPLATFORM)" \
+		--build-arg TARGETARCH="$(word 2,$(subst /, ,$(PLATFORM)))" \
+		-t "$(IMG)" .
+
+.PHONY: docker-push
+docker-push: ## Push the controller image.
+	$(CONTAINER_TOOL) push "$(IMG)"
+
+.PHONY: docker-save
+docker-save: ## Export the controller image for loading into Kind.
+	mkdir -p "$(dir $(IMAGE_ARCHIVE))"
+	$(CONTAINER_TOOL) save --output "$(IMAGE_ARCHIVE)" "$(IMG)"
+
+.PHONY: docker-buildx
+docker-buildx: ## Build and push a multi-architecture image with Docker Buildx.
+	@test -n "$(GO_VERSION)" || { echo 'go.mod must declare a Go version' >&2; exit 1; }
+	$(CONTAINER_TOOL) buildx build --platform "$(PLATFORMS)" \
+		--build-arg GO_VERSION="$(GO_VERSION)" -t "$(IMG)" --push .
+
+.PHONY: sbom
+sbom: ## Scan a published image into a CycloneDX SBOM using a pinned Syft container.
+	mkdir -p "$(dir $(SBOM))"
+	$(CONTAINER_TOOL) run --rm -v "$(abspath $(dir $(SBOM))):/out" \
+		"$(SYFT_IMAGE)" scan "registry:$(IMG)" --platform "$(PLATFORM)" \
+		--output "cyclonedx-json=/out/$(notdir $(SBOM))"
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.

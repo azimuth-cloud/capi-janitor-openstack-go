@@ -38,7 +38,7 @@ func TestEnvtestFinalizers(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Resolve the unmodified CRD from the same CAPO module as the Go types.
-	// go test without the envtest build tag remains usable in offline/Nix builds.
+	// go test without the envtest build tag does not need API server binaries.
 	moduleDir, err := exec.CommandContext(t.Context(), "go", "list", "-m", "-f", "{{.Dir}}",
 		"sigs.k8s.io/cluster-api-provider-openstack").Output()
 	if err != nil {

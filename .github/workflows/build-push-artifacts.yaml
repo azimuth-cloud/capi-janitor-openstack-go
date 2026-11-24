@@ -22,6 +22,9 @@ on:
 
 permissions: {}
 
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   build_push_images:
     name: Build and push image (${{ matrix.arch }})
@@ -34,12 +37,8 @@ jobs:
         include:
           - arch: amd64
             runs-on: ubuntu-latest
-            nix-image: image
-            nix-sbom: sbom
           - arch: arm64
             runs-on: ubuntu-24.04-arm
-            nix-image: image-arm64
-            nix-sbom: sbom-arm64
     permissions:
       contents: read
       packages: write # required for pushing container images
@@ -51,8 +50,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@07ebb8d2749aa2fac2baae7d1cfa011e4acfd8d1 # v5
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
@@ -66,26 +67,29 @@ jobs:
         uses: azimuth-cloud/github-actions/semver@master
 
       - name: Build image
-        run: nix-build nix -A ${{ matrix.nix-image }} -o image.tar.gz
-
-      # Not guaranteed to be present on the runner image.
-      - name: Install skopeo
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
         run: |
-          nix-build nix/nixpkgs.nix -A skopeo -o skopeo
-          echo "$PWD/skopeo/bin" >> "$GITHUB_PATH"
+          make docker-build IMG="$IMAGE" PLATFORM=linux/${{ matrix.arch }}
 
-      # Load the image and run the manager on its native runner.
+      # Run each image on its native architecture with the chart's runtime restrictions.
       - name: Smoke test the image
-        run: docker run --rm "$(docker load -q -i image.tar.gz | awk '{print $NF}')" --help
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
+        run: |
+          docker run --rm --read-only --user 65532:65532 "$IMAGE" --help
+          docker run --rm --read-only --user 65532:65532 --entrypoint /bin/manager "$IMAGE" --help
 
       - name: Push arch-specific image
         env:
           # Per-arch tag consumed by the manifest-list job.
-          DEST: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
-        run: skopeo copy docker-archive:image.tar.gz "docker://${DEST}"
+          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
+        run: make docker-push IMG="$IMAGE"
 
       - name: Generate SBOM (CycloneDX)
-        run: nix-build nix -A ${{ matrix.nix-sbom }} -o sbom-${{ matrix.arch }}.cdx.json
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
+        run: make sbom IMG="$IMAGE" SBOM=sbom-${{ matrix.arch }}.cdx.json
 
       - name: Upload SBOM as artifact
         uses: actions/upload-artifact@v7
@@ -150,7 +154,7 @@ jobs:
           TAG: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}
         run: |
           PLATFORMS=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$TAG" \
-            | jq -r '[.manifests[].platform | .os + "/" + .architecture] | sort | join(",")')
+            | jq -r '[.manifests[].platform | select(.os != "unknown" and .architecture != "unknown") | .os + "/" + .architecture] | unique | sort | join(",")')
           echo "$TAG -> $PLATFORMS"
           [[ "$PLATFORMS" == "linux/amd64,linux/arm64" ]]
 

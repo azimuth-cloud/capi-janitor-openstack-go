@@ -6,7 +6,7 @@ project_name: capi-janitor-openstack-go
 dist: .release/dist
 
 # Generate the standalone Kubernetes bundle from the committed manifests.
-# Each tagged build points at the identically tagged OCI image from Nix.
+# Each tagged build points at the identically tagged OCI image from CI.
 # Snapshots use an unpublished placeholder tag and only validate packaging.
 before:
   hooks:
@@ -58,7 +58,7 @@ changelog:
 
 release:
   # Keep the release private until the workflow has built every asset. The
-  # workflow publishes this draft only after the Nix image and Helm chart jobs
+  # workflow publishes this draft only after the image and Helm chart jobs
   # have succeeded and GoReleaser has uploaded all binary assets.
   draft: true
   use_existing_draft: true

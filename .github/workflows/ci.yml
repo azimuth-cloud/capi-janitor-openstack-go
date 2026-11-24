@@ -10,6 +10,9 @@ concurrency:
 
 permissions: {}
 
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   integration-helpers:
     name: Azimuth test helpers (offline)
@@ -28,7 +31,8 @@ jobs:
           pip install -r test/integration/requirements.txt
           python -m unittest discover -s test/integration -v
 
-  nix:
+  unit:
+    # Keep the required status-check name until the branch ruleset is updated.
     name: fmt + vet + test (Nix)
     runs-on: ubuntu-latest
     permissions:
@@ -38,10 +42,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: DeterminateSystems/nix-installer-action@07ebb8d2749aa2fac2baae7d1cfa011e4acfd8d1 # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
 
-      - name: Run fmt + vet + unit tests
-        run: nix-build nix -A tests
+      - name: Check build configuration, formatting, vet and unit tests
+        run: make check-build-config fmt-check vet test-unit
 
   envtest:
     name: Controller API integration tests
@@ -70,13 +76,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: DeterminateSystems/nix-installer-action@07ebb8d2749aa2fac2baae7d1cfa011e4acfd8d1 # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
 
       - name: Build ARM64 image
-        run: nix-build nix -A image-arm64 -o image-arm64.tar.gz
+        run: make docker-build IMG=controller:ci-arm64 PLATFORM=linux/arm64
 
       - name: Run ARM64 image
-        run: docker run --rm "$(docker load -q -i image-arm64.tar.gz | awk '{print $NF}')" --help
+        run: |
+          docker run --rm --read-only --user 65532:65532 controller:ci-arm64 --help
+          docker run --rm --read-only --user 65532:65532 --entrypoint /bin/manager controller:ci-arm64 --help
 
   goreleaser:
     name: GoReleaser snapshot

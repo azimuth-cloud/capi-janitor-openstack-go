@@ -42,12 +42,21 @@ Development charts are excluded from Artifact Hub, including builds made after a
 
 ## What builds each artifact
 
-- Nix remains the only OCI image builder. GoReleaser does not build or publish
-  container images.
-- The Helm OCI publisher packages, publishes and signs the chart after both Nix image architectures have been pushed, then publishes the Artifact Hub repository metadata.
+- The Dockerfile defines the OCI image build. The Makefile supplies its Go
+  builder version from `go.mod`. Publication uses the shared
+  `azimuth-cloud/github-actions/docker-multiarch-build-push` action to build,
+  push, scan, and sign one image for `linux/amd64` and `linux/arm64`.
+  GoReleaser does not build or publish container images.
+- Native `amd64` and `arm64` runners pull the published image by its short
+  commit SHA tag and smoke-test both manager entry points with the chart's
+  non-root and read-only filesystem settings. Each runner also generates a
+  CycloneDX SBOM retained as an Actions artifact.
+- The Helm OCI publisher packages, publishes and signs the chart after the
+  shared image action, manifest verification, and native image checks succeed,
+  then publishes the Artifact Hub repository metadata.
 - GoReleaser builds the Linux `amd64` and `arm64` `manager` binaries, archives them with the README and license, creates SHA-256 checksums, and attaches the standalone Kubernetes bundle to the GitHub Release.
 
-The Nix image and GoReleaser archives are separate builds from the same tagged commit.
+The Docker image and GoReleaser archives are separate builds from the same tagged commit.
 They are not expected to contain identical binaries.
 
 ## Helm chart distribution
@@ -82,6 +91,31 @@ helm show chart \
 
 Also verify that `ghcr.io/azimuth-cloud/capi-janitor-openstack-go:<app-version>` can be pulled without credentials.
 
+## Image vulnerability checks
+
+The publication workflow delegates Grype reporting, the vulnerability gate,
+SARIF upload, and image signing to the
+[Azimuth shared image-build action](https://github.com/azimuth-cloud/github-actions/blob/master/docker-multiarch-build-push/action.yml).
+The [Python Janitor](https://github.com/azimuth-cloud/cluster-api-janitor-openstack/blob/main/.github/workflows/build-push-artifacts.yaml)
+and [Addon Provider](https://github.com/azimuth-cloud/cluster-api-addon-provider/blob/main/.github/workflows/build-push-artifacts.yaml)
+use the same action. Scanner versions and reporting behavior are maintained
+there.
+
+The shared action receives a multi-architecture image reference and uses its
+default Grype reporting and gate steps. This does not establish separate
+vulnerability scan results for every architecture. The native smoke tests and
+per-architecture CycloneDX SBOM artifacts are separate checks.
+The shared action uploads SARIF results to GitHub Code Scanning. The calling
+workflow and image job grant `security-events: write` for those uploads and
+`id-token: write` for keyless image signing.
+
+The vulnerability gate fails on Critical vulnerabilities with an available
+fix. Lower severity findings and vulnerabilities without a fix remain visible
+in the report. Scanner, SARIF upload, and signing failures also stop the image
+job and prevent the downstream Helm chart and GitHub Release from publishing.
+The shared action pushes the image before scanning and signing it, so a
+failure at those later steps can leave the image published.
+
 ## Before tagging
 
 1. For the first Python replacement release, confirm the [replacement work list](../ROADMAP.md#replacement-release-work), including a passing [Azimuth integration run and migration check](integration-testing.md).
@@ -100,11 +134,15 @@ Also verify that `ghcr.io/azimuth-cloud/capi-janitor-openstack-go:<app-version>`
 
 The tag workflow deliberately publishes in this order:
 
-1. Build and push the OCI image for both architectures with Nix.
-2. Package, publish and sign the Helm chart, then publish the Artifact Hub repository metadata.
-3. Build the binary archives and Kubernetes bundle and upload them to a draft
+1. Build and push the multi-architecture OCI image through the shared image
+   action, run its vulnerability reporting and gate, sign the image, and verify
+   the published manifest contains both supported architectures.
+2. Pull and smoke-test the published image on native `amd64` and `arm64`
+   runners, and retain their CycloneDX SBOMs as Actions artifacts.
+3. Package, publish and sign the Helm chart, then publish the Artifact Hub repository metadata.
+4. Build the binary archives and Kubernetes bundle and upload them to a draft
    GitHub Release.
-4. Make the GitHub Release public only after every preceding step succeeds.
+5. Make the GitHub Release public only after every preceding step succeeds.
 
 Uploads are separate operations. A later failure does not remove images, charts or metadata already published.
 If an image or chart job fails, no GitHub Release is created. If GoReleaser

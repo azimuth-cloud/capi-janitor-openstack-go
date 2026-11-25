@@ -64,8 +64,9 @@ jobs:
     secrets: inherit
     permissions:
       contents: write
-      id-token: write # Required for chart signing
+      id-token: write # Required for image and chart signing
       packages: write
+      security-events: write # Required by the image workflow's Grype SARIF upload
 
   run_azimuth_tests:
     needs: [publish_artifacts]

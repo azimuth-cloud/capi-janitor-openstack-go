@@ -27,21 +27,15 @@ env:
 
 jobs:
   build_push_images:
-    name: Build and push image (${{ matrix.arch }})
-    # Each arch builds on its own native runner so the resulting binary can be
-    # executed for a real smoke test.
-    runs-on: ${{ matrix.runs-on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runs-on: ubuntu-latest
-          - arch: arm64
-            runs-on: ubuntu-24.04-arm
+    name: Build, scan and push images
+    runs-on: ubuntu-latest
+    outputs:
+      image: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}
     permissions:
       contents: read
       packages: write # required for pushing container images
+      id-token: write # required for the shared action's image signing
+      security-events: write # required for publishing Grype SARIF results
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,64 +60,7 @@ jobs:
         id: semver
         uses: azimuth-cloud/github-actions/semver@master
 
-      - name: Build image
-        env:
-          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
-        run: |
-          make docker-build IMG="$IMAGE" PLATFORM=linux/${{ matrix.arch }}
-
-      # Run each image on its native architecture with the chart's runtime restrictions.
-      - name: Smoke test the image
-        env:
-          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
-        run: |
-          docker run --rm --read-only --user 65532:65532 "$IMAGE" --help
-          docker run --rm --read-only --user 65532:65532 --entrypoint /bin/manager "$IMAGE" --help
-
-      - name: Push arch-specific image
-        env:
-          # Per-arch tag consumed by the manifest-list job.
-          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
-        run: make docker-push IMG="$IMAGE"
-
-      - name: Generate SBOM (CycloneDX)
-        env:
-          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
-        run: make sbom IMG="$IMAGE" SBOM=sbom-${{ matrix.arch }}.cdx.json
-
-      - name: Upload SBOM as artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: sbom-${{ steps.semver.outputs.short-sha }}-${{ matrix.arch }}
-          path: sbom-${{ matrix.arch }}.cdx.json
-
-  push_manifest_list:
-    name: Assemble and push multi-arch manifest list
-    runs-on: ubuntu-latest
-    needs: [build_push_images]
-    permissions:
-      contents: read
-      packages: write # required for pushing the manifest list
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Get SemVer version for current commit
-        id: semver
-        uses: azimuth-cloud/github-actions/semver@master
-
-      # Produce the final tags declaratively: branch name, git tag, and short SHA.
+      # Keep the existing branch, release and short-SHA image tags.
       - name: Calculate image tags
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
@@ -135,18 +72,22 @@ jobs:
             type=ref,event=tag
             type=raw,value=${{ steps.semver.outputs.short-sha }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-
-      - name: Create and push multi-arch manifest lists
-        env:
-          SRC: ghcr.io/${{ github.repository }}:${{ steps.semver.outputs.short-sha }}
-          TAGS: ${{ steps.meta.outputs.tags }}
+      - name: Read the Go version for the image build
+        id: build-config
         run: |
-          for TAG in $TAGS; do
-            docker buildx imagetools create -t "$TAG" \
-              "${SRC}-amd64" "${SRC}-arm64"
-          done
+          go_version=$(make --no-print-directory go-version)
+          echo "go-version=$go_version" >> "$GITHUB_OUTPUT"
+
+      - name: Build, scan and push images with the shared action
+        uses: azimuth-cloud/github-actions/docker-multiarch-build-push@master
+        with:
+          cache-key: capi-janitor-openstack-go
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: GO_VERSION=${{ steps.build-config.outputs.go-version }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
       - name: Verify published manifest lists are multi-arch
         env:
@@ -158,11 +99,66 @@ jobs:
           echo "$TAG -> $PLATFORMS"
           [[ "$PLATFORMS" == "linux/amd64,linux/arm64" ]]
 
+  smoke_images:
+    name: Image smoke test (${{ matrix.arch }})
+    needs: [build_push_images]
+    # Execute the published images on native runners after the shared scan passes.
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-latest
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and smoke test the published image
+        env:
+          IMAGE: ${{ needs.build_push_images.outputs.image }}
+          PLATFORM: linux/${{ matrix.arch }}
+        run: |
+          docker pull --platform "$PLATFORM" "$IMAGE"
+          docker run --pull=never --platform "$PLATFORM" --rm --read-only --user 65532:65532 "$IMAGE" --help
+          docker run --pull=never --platform "$PLATFORM" --rm --read-only --user 65532:65532 --entrypoint /bin/manager "$IMAGE" --help
+
+      - name: Generate SBOM (CycloneDX)
+        env:
+          IMAGE: ${{ needs.build_push_images.outputs.image }}
+        run: make sbom IMG="$IMAGE" PLATFORM=linux/${{ matrix.arch }} SBOM=sbom-${{ matrix.arch }}.cdx.json
+
+      - name: Upload SBOM as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-${{ matrix.arch }}.cdx.json
+          path: sbom-${{ matrix.arch }}.cdx.json
+
   build_push_chart:
     name: Build and push Helm chart
     runs-on: ubuntu-latest
-    # Only build and push the chart if the images and manifest list published
-    needs: [build_push_images, push_manifest_list]
+    # Only publish the chart after the shared scan and both native smoke tests pass.
+    needs: [build_push_images, smoke_images]
     outputs:
       chart-version: ${{ steps.artifact-versions.outputs.chart }}
     permissions:
@@ -224,7 +220,7 @@ jobs:
     if: startsWith(inputs.ref || github.ref, 'refs/tags/')
     needs:
       - build_push_images
-      - push_manifest_list
+      - smoke_images
       - build_push_chart
     runs-on: ubuntu-latest
     permissions:
